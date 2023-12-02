@@ -12,6 +12,7 @@ mod drawers {
 mod bind;
 mod event;
 mod highlight;
+mod lsp;
 mod math;
 mod script;
 mod status;
@@ -22,26 +23,29 @@ use crate::script::{Command, SplitKind};
 enum CloseKind {
     Done,
     This,
-    Replace(Box<dyn Buffer>),
+    Replace(Box<Buffer>),
 }
 
 trait Drawable {
     fn draw(&self, handle: &mut dyn drawer::Handle, coords: Rect) -> std::io::Result<()>;
 }
 
-//struct Buffer {
-//    vars: HashMap<String, String>,
-//    base: Box<dyn BufferData>,
-//}
+#[derive(Clone)]
+struct Buffer {
+    vars: HashMap<String, String>,
+    base: Box<dyn BufferFuncs>,
+}
 
-trait Buffer: CloneBuffer {
+trait BufferFuncs: CloneBuffer {
+    fn setup(&mut self, base: &mut Buffer) {}
+
     fn update(&mut self, size: Vector);
     fn draw_conts(&self, handle: &mut dyn drawer::Handle, coords: Rect) -> std::io::Result<()>;
     fn get_cursor(&mut self, size: Vector, char_size: Vector) -> CursorData;
-    fn event_process(&mut self, ev: event::Event);
+    fn event_process(&mut self, ev: event::Event, lsp: &mut lsp::LSP);
     fn nav(&mut self, dir: NavDir) -> bool;
     fn get_path(&self) -> String;
-    fn set_focused(&mut self, child: &Box<dyn Buffer>) -> bool;
+    fn set_focused(&mut self, child: &Box<Buffer>) -> bool;
     fn close(&mut self) -> CloseKind;
 
     fn click(&mut self, pos: Vector, size: Vector) {}
@@ -50,26 +54,85 @@ trait Buffer: CloneBuffer {
     }
 }
 
+impl<T: BufferFuncs + 'static> From<Box<T>> for Box<Buffer> {
+    fn from(base: Box<T>) -> Self {
+        let base = base;
+
+        let mut result = Box::new(Buffer {
+            vars: HashMap::new(),
+            base: Box::new(*base),
+        });
+
+        result.base.clone().setup(&mut result);
+
+        println!("{:?}", result.vars);
+
+        result
+    }
+}
+
 trait CloneBuffer {
-    fn clone_buffer<'a>(&self) -> Box<dyn Buffer>;
+    fn clone_buffer<'a>(&self) -> Box<dyn BufferFuncs>;
 }
 
 impl<T> CloneBuffer for T
 where
-    T: Buffer + Clone + 'static,
+    T: BufferFuncs + Clone + 'static,
 {
-    fn clone_buffer(&self) -> Box<dyn Buffer> {
+    fn clone_buffer(&self) -> Box<dyn BufferFuncs> {
         Box::new(self.clone())
     }
 }
 
-impl Clone for Box<dyn Buffer> {
+impl Clone for Box<dyn BufferFuncs> {
     fn clone(&self) -> Self {
         self.clone_buffer()
     }
 }
 
-impl Drawable for dyn Buffer + '_ {
+impl Buffer {
+    fn update(&mut self, size: Vector) {
+        self.base.update(size)
+    }
+
+    fn draw_conts(&self, handle: &mut dyn drawer::Handle, coords: Rect) -> std::io::Result<()> {
+        self.base.draw_conts(handle, coords)
+    }
+
+    fn get_cursor(&mut self, size: Vector, char_size: Vector) -> CursorData {
+        self.base.get_cursor(size, char_size)
+    }
+
+    fn event_process(&mut self, ev: event::Event, lsp: &mut lsp::LSP) {
+        self.base.event_process(ev, lsp)
+    }
+
+    fn nav(&mut self, dir: NavDir) -> bool {
+        self.base.nav(dir)
+    }
+
+    fn get_path(&self) -> String {
+        self.base.get_path()
+    }
+
+    fn set_focused(&mut self, child: &Box<Buffer>) -> bool {
+        self.base.set_focused(child)
+    }
+
+    fn close(&mut self) -> CloseKind {
+        self.base.close()
+    }
+
+    fn click(&mut self, pos: Vector, size: Vector) {
+        self.base.click(pos, size)
+    }
+
+    fn is_empty(&mut self) -> bool {
+        self.base.is_empty()
+    }
+}
+
+impl Drawable for Buffer {
     fn draw(&self, handle: &mut dyn drawer::Handle, coords: Rect) -> std::io::Result<()> {
         self.draw_conts(handle, coords)?;
 
@@ -106,11 +169,11 @@ impl Measurement {
 
 #[derive(Clone)]
 struct TabbedBuffer {
-    tabs: Vec<Box<dyn Buffer>>,
+    tabs: Vec<Box<Buffer>>,
     active: usize,
 }
 
-impl Buffer for TabbedBuffer {
+impl BufferFuncs for TabbedBuffer {
     fn update(&mut self, size: Vector) {
         let sub_size = Vector {
             x: size.x,
@@ -140,8 +203,8 @@ impl Buffer for TabbedBuffer {
         result
     }
 
-    fn event_process(&mut self, ev: event::Event) {
-        self.tabs[self.active].event_process(ev);
+    fn event_process(&mut self, ev: event::Event, lsp: &mut lsp::LSP) {
+        self.tabs[self.active].event_process(ev, lsp);
     }
 
     fn nav(&mut self, _dir: NavDir) -> bool {
@@ -152,7 +215,7 @@ impl Buffer for TabbedBuffer {
         "Tabs>".to_string() + &self.tabs[self.active].get_path()
     }
 
-    fn set_focused(&mut self, child: &Box<dyn Buffer>) -> bool {
+    fn set_focused(&mut self, child: &Box<Buffer>) -> bool {
         if self.tabs[self.active].set_focused(child) {
             self.tabs[self.active] = child.clone();
         }
@@ -177,7 +240,7 @@ impl Buffer for TabbedBuffer {
         match self.tabs[self.active].close() {
             CloseKind::Done => CloseKind::Done,
             CloseKind::This => {
-                self.tabs[self.active] = Box::new(EmptyBuffer {});
+                self.tabs[self.active] = Box::new(EmptyBuffer {}).into();
                 CloseKind::Done
             }
             CloseKind::Replace(r) => {
@@ -190,15 +253,15 @@ impl Buffer for TabbedBuffer {
 
 #[derive(Clone)]
 struct SplitBuffer {
-    a: Box<dyn Buffer>,
-    b: Box<dyn Buffer>,
+    a: Box<Buffer>,
+    b: Box<Buffer>,
     split_dir: SplitDir,
     split: Measurement,
     a_active: bool,
     char_size: Vector,
 }
 
-impl Buffer for SplitBuffer {
+impl BufferFuncs for SplitBuffer {
     fn update(&mut self, size: Vector) {
         match self.split_dir {
             SplitDir::Vertical => {
@@ -360,7 +423,7 @@ impl Buffer for SplitBuffer {
         }
     }
 
-    fn event_process(&mut self, ev: event::Event) {
+    fn event_process(&mut self, ev: event::Event, lsp: &mut lsp::LSP) {
         let targ = event::Mods {
             ctrl: true,
             alt: false,
@@ -376,9 +439,9 @@ impl Buffer for SplitBuffer {
 
             _ => {
                 if self.a_active {
-                    self.a.event_process(ev)
+                    self.a.event_process(ev, lsp)
                 } else {
-                    self.b.event_process(ev)
+                    self.b.event_process(ev, lsp)
                 }
             }
         }
@@ -456,7 +519,7 @@ impl Buffer for SplitBuffer {
         }
     }
 
-    fn set_focused(&mut self, child: &Box<dyn Buffer>) -> bool {
+    fn set_focused(&mut self, child: &Box<Buffer>) -> bool {
         if self.a_active {
             if self.a.set_focused(child) {
                 self.a = child.clone();
@@ -482,7 +545,7 @@ impl Buffer for SplitBuffer {
                     if self.a.is_empty() {
                         CloseKind::Replace(self.b.clone())
                     } else {
-                        self.a = Box::new(EmptyBuffer {});
+                        self.a = Box::new(EmptyBuffer {}).into();
                         CloseKind::Done
                     }
                 }
@@ -498,7 +561,7 @@ impl Buffer for SplitBuffer {
                     if self.b.is_empty() {
                         CloseKind::Replace(self.a.clone())
                     } else {
-                        self.b = Box::new(EmptyBuffer {});
+                        self.b = Box::new(EmptyBuffer {}).into();
                         CloseKind::Done
                     }
                 }
@@ -541,7 +604,7 @@ struct TreeBuffer {
     cached: bool,
 }
 
-impl Buffer for TreeBuffer {
+impl BufferFuncs for TreeBuffer {
     fn update(&mut self, _size: Vector) {
         if !self.cached {
             for file in read_dir(&self.path).unwrap() {
@@ -601,7 +664,7 @@ impl Buffer for TreeBuffer {
         }
     }
 
-    fn event_process(&mut self, _ev: event::Event) {}
+    fn event_process(&mut self, _ev: event::Event, _lsp: &mut lsp::LSP) {}
 
     fn nav(&mut self, _dir: NavDir) -> bool {
         return false;
@@ -611,7 +674,7 @@ impl Buffer for TreeBuffer {
         format!("Tree[{}]", self.path.display())
     }
 
-    fn set_focused(&mut self, _child: &Box<dyn Buffer>) -> bool {
+    fn set_focused(&mut self, _child: &Box<Buffer>) -> bool {
         false
     }
 
@@ -625,7 +688,7 @@ struct TextBuffer {
     text: String,
 }
 
-impl Buffer for TextBuffer {
+impl BufferFuncs for TextBuffer {
     fn update(&mut self, _size: Vector) {}
 
     fn draw_conts(&self, handle: &mut dyn drawer::Handle, coords: Rect) -> std::io::Result<()> {
@@ -649,7 +712,7 @@ impl Buffer for TextBuffer {
         }
     }
 
-    fn event_process(&mut self, _ev: event::Event) {}
+    fn event_process(&mut self, _ev: event::Event, _lsp: &mut lsp::LSP) {}
 
     fn nav(&mut self, _dir: NavDir) -> bool {
         return false;
@@ -659,7 +722,7 @@ impl Buffer for TextBuffer {
         format!("Text")
     }
 
-    fn set_focused(&mut self, _child: &Box<dyn Buffer>) -> bool {
+    fn set_focused(&mut self, _child: &Box<Buffer>) -> bool {
         false
     }
 
@@ -685,7 +748,21 @@ struct FileBuffer {
     height: i32,
 }
 
-impl Buffer for FileBuffer {
+impl BufferFuncs for FileBuffer {
+    fn setup(&mut self, base: &mut Buffer) {
+        base.vars.insert(
+            "filetype".to_string(),
+            self.filename
+                .split('/')
+                .last()
+                .unwrap()
+                .split('.')
+                .last()
+                .unwrap()
+                .to_string(),
+        );
+    }
+
     fn update(&mut self, size: Vector) {
         if !self.cached {
             let file = read_to_string(&self.filename);
@@ -797,7 +874,7 @@ impl Buffer for FileBuffer {
         result
     }
 
-    fn event_process(&mut self, ev: event::Event) {
+    fn event_process(&mut self, ev: event::Event, lsp: &mut lsp::LSP) {
         let targ_none = event::Mods {
             ctrl: false,
             alt: false,
@@ -906,7 +983,7 @@ impl Buffer for FileBuffer {
         format!("File[{}]", self.filename)
     }
 
-    fn set_focused(&mut self, _child: &Box<dyn Buffer>) -> bool {
+    fn set_focused(&mut self, _child: &Box<Buffer>) -> bool {
         false
     }
 
@@ -930,7 +1007,7 @@ fn create_line(text: String) -> drawer::Line {
     }
 }
 
-impl Buffer for EmptyBuffer {
+impl BufferFuncs for EmptyBuffer {
     fn update(&mut self, _size: Vector) {}
 
     fn draw_conts(&self, handle: &mut dyn drawer::Handle, coords: Rect) -> std::io::Result<()> {
@@ -954,7 +1031,7 @@ impl Buffer for EmptyBuffer {
         }
     }
 
-    fn event_process(&mut self, _ev: event::Event) {}
+    fn event_process(&mut self, ev: event::Event, lsp: &mut lsp::LSP) {}
 
     fn nav(&mut self, _dir: NavDir) -> bool {
         false
@@ -964,7 +1041,7 @@ impl Buffer for EmptyBuffer {
         "Empty".to_string()
     }
 
-    fn set_focused(&mut self, _child: &Box<dyn Buffer>) -> bool {
+    fn set_focused(&mut self, _child: &Box<Buffer>) -> bool {
         true
     }
 
@@ -1008,7 +1085,7 @@ impl Status {
         &mut self,
         input: String,
         drawer: &mut dyn drawer::Drawer,
-        bu: &mut Box<dyn Buffer>,
+        bu: &mut Box<Buffer>,
         default: String,
         colors: &'a HashMap<String, highlight::Color>,
     ) -> std::io::Result<Option<String>> {
@@ -1053,7 +1130,7 @@ impl Status {
 
 fn render<'a, 'c, 'd, 'e>(
     drawer: &mut dyn drawer::Drawer,
-    bu: &'a mut dyn Buffer,
+    bu: &'a mut Buffer,
     status: &'c mut Status,
     colors: &'e HashMap<String, highlight::Color>,
 ) -> std::io::Result<()> {
@@ -1102,10 +1179,11 @@ fn render<'a, 'c, 'd, 'e>(
 fn run_command<'a, 'b>(
     cmd: Command,
     dr: &mut dyn drawer::Drawer,
-    bu: &mut Box<dyn Buffer>,
+    bu: &mut Box<Buffer>,
     status: &mut Status,
     binds: &mut HashMap<String, Command>,
     colors: &mut HashMap<String, highlight::Color>,
+    lsp: &mut lsp::LSP,
 ) -> std::io::Result<()> {
     match cmd {
         Command::Unknown(_) => {}
@@ -1115,46 +1193,50 @@ fn run_command<'a, 'b>(
             {
                 let cmd = Command::parse(cmd);
 
-                run_command(cmd, dr, bu, status, binds, colors)?;
+                run_command(cmd, dr, bu, status, binds, colors, lsp)?;
             };
         }
         Command::Split(SplitKind::Horizontal) => {
-            let adds: Box<dyn Buffer> = Box::new(SplitBuffer {
-                a: Box::new(EmptyBuffer {}),
-                b: Box::new(EmptyBuffer {}),
+            let adds: Box<Buffer> = Box::new(SplitBuffer {
+                a: Box::new(EmptyBuffer {}).into(),
+                b: Box::new(EmptyBuffer {}).into(),
                 split_dir: SplitDir::Horizontal,
                 a_active: false,
                 split: Measurement::Percent(0.5),
                 char_size: Vector { x: 1, y: 1 },
-            });
+            })
+            .into();
             if bu.set_focused(&adds) {
                 *bu = adds;
             }
         }
         Command::Split(SplitKind::Vertical) => {
-            let adds: Box<dyn Buffer> = Box::new(SplitBuffer {
-                a: Box::new(EmptyBuffer {}),
-                b: Box::new(EmptyBuffer {}),
+            let adds: Box<Buffer> = Box::new(SplitBuffer {
+                a: Box::new(EmptyBuffer {}).into(),
+                b: Box::new(EmptyBuffer {}).into(),
                 split_dir: SplitDir::Vertical,
                 a_active: false,
                 split: Measurement::Percent(0.5),
                 char_size: Vector { x: 1, y: 1 },
-            });
+            })
+            .into();
             if bu.set_focused(&adds) {
                 *bu = adds;
             }
         }
         Command::Split(SplitKind::Tabbed) => {
-            let adds: Box<dyn Buffer> = Box::new(TabbedBuffer {
-                tabs: vec![Box::new(EmptyBuffer {})],
+            let adds: Box<Buffer> = Box::new(TabbedBuffer {
+                tabs: vec![Box::new(EmptyBuffer {}).into()],
                 active: 0,
-            });
+            })
+            .into();
             if bu.set_focused(&adds) {
                 *bu = adds;
             }
         }
         Command::Open(path) => {
-            let adds: Box<dyn Buffer> = Box::new(FileBuffer {
+            let cont = read_to_string(&path).unwrap();
+            let adds: Box<Buffer> = Box::new(FileBuffer {
                 filename: path,
                 cached: false,
                 data: Vec::new(),
@@ -1162,32 +1244,34 @@ fn run_command<'a, 'b>(
                 scroll: 0,
                 mode: FileMode::Normal,
                 height: 0,
-            });
+            })
+            .into();
             if bu.set_focused(&adds) {
+                lsp.open_file(cont);
                 *bu = adds;
             }
         }
         Command::Write(path) => {
-            bu.as_mut().event_process(event::Event::Save(path));
+            bu.as_mut().event_process(event::Event::Save(path), lsp);
         }
         Command::Source(path) => {
             let file = read_to_string(&path)?;
             for line in file.lines() {
                 let cmd = Command::parse(line.to_string());
 
-                run_command(cmd, dr, bu, status, binds, colors)?;
+                run_command(cmd, dr, bu, status, binds, colors, lsp)?;
             }
         }
         Command::Run => {
             if let Some(cmd) = status.prompt("".to_string(), dr, bu, "".to_string(), &colors)? {
                 let cmd = Command::parse(cmd);
 
-                run_command(cmd, dr, bu, status, binds, colors)?;
+                run_command(cmd, dr, bu, status, binds, colors, lsp)?;
             };
         }
         Command::Close => match bu.close() {
             CloseKind::Replace(r) => *bu = r,
-            CloseKind::This => *bu = Box::new(EmptyBuffer {}),
+            CloseKind::This => *bu = Box::new(EmptyBuffer {}).into(),
             CloseKind::Done => {}
         },
         Command::Highlight(s, None) => {
@@ -1251,17 +1335,28 @@ fn main() -> std::io::Result<()> {
 
     let mut binds = HashMap::new();
     let mut colors = HashMap::new();
-    let mut bu: Box<dyn Buffer> = Box::new(EmptyBuffer {}) as Box<dyn Buffer>;
+    let mut bu: Box<Buffer> = Box::new(EmptyBuffer {}).into();
     let mut status = Status {
         path: "".to_string(),
         prompt: None,
         input: "".to_string(),
     };
 
+    let mut lsp = lsp::LSP::new();
+    lsp.init();
+
     drawer.init()?;
 
     let cmd = Command::parse("source /home/john/.config/prestoedit/init.pe".to_string());
-    run_command(cmd, drawer, &mut bu, &mut status, &mut binds, &mut colors)?;
+    run_command(
+        cmd,
+        drawer,
+        &mut bu,
+        &mut status,
+        &mut binds,
+        &mut colors,
+        &mut lsp,
+    )?;
 
     binds.insert("<:>".to_string(), Command::Run);
 
@@ -1273,9 +1368,17 @@ fn main() -> std::io::Result<()> {
                 event::Event::Quit => break,
                 _ => {
                     if let Some(cmd) = bind::check(&mut binds, &ev) {
-                        run_command(cmd, drawer, &mut bu, &mut status, &mut binds, &mut colors)?;
+                        run_command(
+                            cmd,
+                            drawer,
+                            &mut bu,
+                            &mut status,
+                            &mut binds,
+                            &mut colors,
+                            &mut lsp,
+                        )?;
                     } else {
-                        bu.as_mut().event_process(ev)
+                        bu.as_mut().event_process(ev, &mut lsp)
                     };
                 }
             }

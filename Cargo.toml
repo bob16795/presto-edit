@@ -12,3 +12,4 @@ clap = { version = "4.0", features = ["derive"] }
 [dependencies.crossterm]
 version = "0.26"
 features = ["event-stream"] 
+
