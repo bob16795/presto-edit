@@ -71,7 +71,7 @@ fn lerp_point(
             -direction_alignment,
         )
         .clamp(0.1, 1.0)
-            * 0.1;
+            * 0.2;
         *t = (*t + corner_dt / (0.5)).min(1.0);
     }
 
@@ -448,12 +448,14 @@ impl drawer::Drawer for GuiDrawer {
         })
     }
 
-    fn get_event(&mut self) -> Option<ev::Event> {
+    fn get_events(&mut self) -> Vec<ev::Event> {
         if self.rl.window_should_close() {
-            return Some(ev::Event::Quit);
+            return vec![ev::Event::Quit];
         }
 
-        let mut mods = ev::Mods {
+        let mut result = Vec::new();
+
+        let mods = &mut ev::Mods {
             ctrl: self.rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
                 || self.rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL),
             shift: self.rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
@@ -472,7 +474,7 @@ impl drawer::Drawer for GuiDrawer {
             (KeyboardKey::KEY_BACKSPACE, ev::Nav::BackSpace),
         ] {
             if is_key_pressed_repeat(&self.rl, k) {
-                return Some(ev::Event::Nav(mods, v));
+                result.push(ev::Event::Nav(mods.clone(), v));
             }
         }
 
@@ -504,20 +506,22 @@ impl drawer::Drawer for GuiDrawer {
             (true, KeyboardKey::KEY_ZERO, ')'),
         ] {
             if is_key_pressed_repeat(&self.rl, k) && s == mods.shift {
+                let os = mods.shift;
                 mods.shift = false;
-                return Some(ev::Event::Key(mods, v));
+                result.push(ev::Event::Key(mods.clone(), v));
+                mods.shift = os;
             }
         }
 
         let mut ch = 'a';
         for k in KeyboardKey::KEY_A as u32..KeyboardKey::KEY_Z as u32 {
             if is_key_pressed_repeat(&self.rl, unsafe { std::mem::transmute(k as u32) }) {
-                return Some(ev::Event::Key(mods, ch));
+                result.push(ev::Event::Key(mods.clone(), ch));
             }
 
             ch = (ch as u8 + 1) as char;
         }
 
-        None
+        result
     }
 }

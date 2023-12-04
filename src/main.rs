@@ -1,13 +1,20 @@
 use crate::drawer::{CursorData, CursorStyle};
 use clap::Parser;
+use core::ffi::CStr;
 use std::collections::HashMap;
 use std::fs::{read_dir, read_to_string};
 use std::io::{stdout, Write};
 
+use glfw;
+use glfw::Context;
+use ogl33::*;
+
 mod drawer;
 mod drawers {
     pub mod cli;
+    pub mod gl;
     pub mod gui;
+    pub mod helpers;
 }
 mod bind;
 mod event;
@@ -46,8 +53,11 @@ trait BufferFuncs: CloneBuffer {
     fn nav(&mut self, dir: NavDir) -> bool;
     fn get_path(&self) -> String;
     fn set_focused(&mut self, child: &Box<Buffer>) -> bool;
-    fn close(&mut self) -> CloseKind;
+    fn close(&mut self, lsp: &mut lsp::LSP) -> CloseKind;
 
+    fn focused_child(&mut self) -> Option<&mut Buffer> {
+        None
+    }
     fn click(&mut self, pos: Vector, size: Vector) {}
     fn is_empty(&mut self) -> bool {
         false
@@ -64,8 +74,6 @@ impl<T: BufferFuncs + 'static> From<Box<T>> for Box<Buffer> {
         });
 
         result.base.clone().setup(&mut result);
-
-        println!("{:?}", result.vars);
 
         result
     }
@@ -91,6 +99,26 @@ impl Clone for Box<dyn BufferFuncs> {
 }
 
 impl Buffer {
+    fn set_var(&mut self, v: String, value: String) {
+        if let Some(c) = self.base.focused_child() {
+            c.set_var(v, value);
+        } else {
+            self.vars.insert(v, value);
+        }
+    }
+
+    fn get_var(&mut self, v: &String) -> Option<String> {
+        if let Some(c) = self.base.focused_child() {
+            if let Some(v) = c.get_var(v) {
+                Some(v)
+            } else {
+                self.vars.get(v).cloned()
+            }
+        } else {
+            self.vars.get(v).cloned()
+        }
+    }
+
     fn update(&mut self, size: Vector) {
         self.base.update(size)
     }
@@ -119,8 +147,8 @@ impl Buffer {
         self.base.set_focused(child)
     }
 
-    fn close(&mut self) -> CloseKind {
-        self.base.close()
+    fn close(&mut self, lsp: &mut lsp::LSP) -> CloseKind {
+        self.base.close(lsp)
     }
 
     fn click(&mut self, pos: Vector, size: Vector) {
@@ -223,7 +251,7 @@ impl BufferFuncs for TabbedBuffer {
         return false;
     }
 
-    fn close(&mut self) -> CloseKind {
+    fn close(&mut self, lsp: &mut lsp::LSP) -> CloseKind {
         if self.tabs[self.active].is_empty() {
             self.tabs.remove(self.active);
             if self.active != 0 {
@@ -237,7 +265,7 @@ impl BufferFuncs for TabbedBuffer {
             return CloseKind::Done;
         }
 
-        match self.tabs[self.active].close() {
+        match self.tabs[self.active].close(lsp) {
             CloseKind::Done => CloseKind::Done,
             CloseKind::This => {
                 self.tabs[self.active] = Box::new(EmptyBuffer {}).into();
@@ -304,17 +332,6 @@ impl BufferFuncs for SplitBuffer {
                     .split
                     .get_value(coords.h as usize, char_size.y as usize)
                     as i32;
-                handle.render_line(
-                    Vector {
-                        x: coords.x,
-                        y: coords.y + split,
-                    },
-                    Vector {
-                        x: coords.x + coords.w,
-                        y: coords.y + split,
-                    },
-                )?;
-
                 self.a.draw(
                     handle,
                     Rect {
@@ -333,22 +350,22 @@ impl BufferFuncs for SplitBuffer {
                         h: coords.h - split - 1,
                     },
                 )?;
+                handle.render_line(
+                    Vector {
+                        x: coords.x,
+                        y: coords.y + split,
+                    },
+                    Vector {
+                        x: coords.x + coords.w,
+                        y: coords.y + split,
+                    },
+                )?;
             }
             SplitDir::Horizontal => {
                 let split: i32 = self
                     .split
                     .get_value(coords.w as usize, char_size.x as usize)
                     as i32;
-                handle.render_line(
-                    Vector {
-                        x: coords.x + split,
-                        y: coords.y,
-                    },
-                    Vector {
-                        x: coords.x + split,
-                        y: coords.y + coords.h,
-                    },
-                )?;
                 self.a.draw(
                     handle,
                     Rect {
@@ -365,6 +382,16 @@ impl BufferFuncs for SplitBuffer {
                         y: coords.y,
                         w: coords.w - split - 1,
                         h: coords.h,
+                    },
+                )?;
+                handle.render_line(
+                    Vector {
+                        x: coords.x + split,
+                        y: coords.y,
+                    },
+                    Vector {
+                        x: coords.x + split,
+                        y: coords.y + coords.h,
                     },
                 )?;
             }
@@ -533,13 +560,13 @@ impl BufferFuncs for SplitBuffer {
         return false;
     }
 
-    fn close(&mut self) -> CloseKind {
+    fn close(&mut self, lsp: &mut lsp::LSP) -> CloseKind {
         if self.a.is_empty() && self.b.is_empty() {
             return CloseKind::This;
         }
 
         if self.a_active {
-            match self.a.close() {
+            match self.a.close(lsp) {
                 CloseKind::Done => CloseKind::Done,
                 CloseKind::This => {
                     if self.a.is_empty() {
@@ -555,7 +582,7 @@ impl BufferFuncs for SplitBuffer {
                 }
             }
         } else {
-            match self.b.close() {
+            match self.b.close(lsp) {
                 CloseKind::Done => CloseKind::Done,
                 CloseKind::This => {
                     if self.b.is_empty() {
@@ -585,6 +612,14 @@ impl BufferFuncs for SplitBuffer {
                 self.a_active = (size.y / 2) < pos.y;
             }
             _ => todo!(),
+        }
+    }
+
+    fn focused_child(&mut self) -> Option<&mut Buffer> {
+        if self.a_active {
+            Some(&mut self.a)
+        } else {
+            Some(&mut self.b)
         }
     }
 }
@@ -678,7 +713,7 @@ impl BufferFuncs for TreeBuffer {
         false
     }
 
-    fn close(&mut self) -> CloseKind {
+    fn close(&mut self, lsp: &mut lsp::LSP) -> CloseKind {
         CloseKind::This
     }
 }
@@ -726,7 +761,7 @@ impl BufferFuncs for TextBuffer {
         false
     }
 
-    fn close(&mut self) -> CloseKind {
+    fn close(&mut self, _lsp: &mut lsp::LSP) -> CloseKind {
         CloseKind::This
     }
 }
@@ -931,10 +966,15 @@ impl BufferFuncs for FileBuffer {
                 }
                 event::Event::Save(None) => {
                     let mut file = std::fs::File::create(self.filename.as_str()).unwrap();
+                    let mut conts: String = "".to_string();
                     for line in &self.data {
                         let _ = file.write(line.as_bytes());
                         let _ = file.write(b"\n");
+                        conts += line;
+                        conts.push('\n');
                     }
+
+                    lsp.save_file(self.filename.clone(), conts).unwrap();
                 }
                 event::Event::Key(mods, c) if mods == targ_none => {
                     self.data[self.pos.y as usize].insert(self.pos.x as usize, c);
@@ -965,10 +1005,15 @@ impl BufferFuncs for FileBuffer {
                 }
                 event::Event::Save(None) => {
                     let mut file = std::fs::File::create(self.filename.as_str()).unwrap();
+                    let mut conts: String = "".to_string();
                     for line in &self.data {
                         let _ = file.write(line.as_bytes());
                         let _ = file.write(b"\n");
+                        conts += line;
+                        conts.push('\n');
                     }
+
+                    lsp.save_file(self.filename.clone(), conts).unwrap();
                 }
                 _ => {}
             },
@@ -987,7 +1032,8 @@ impl BufferFuncs for FileBuffer {
         false
     }
 
-    fn close(&mut self) -> CloseKind {
+    fn close(&mut self, lsp: &mut lsp::LSP) -> CloseKind {
+        lsp.close_file(self.filename.clone()).unwrap();
         CloseKind::This
     }
 }
@@ -997,7 +1043,7 @@ struct EmptyBuffer {}
 
 fn create_line(text: String) -> drawer::Line {
     let mut colors = Vec::new();
-    for t in 0..text.len() {
+    for _ in 0..text.len() {
         colors.push(highlight::Color::Link("fg".to_string()));
     }
 
@@ -1045,7 +1091,7 @@ impl BufferFuncs for EmptyBuffer {
         true
     }
 
-    fn close(&mut self) -> CloseKind {
+    fn close(&mut self, _lsp: &mut lsp::LSP) -> CloseKind {
         CloseKind::This
     }
 
@@ -1058,6 +1104,7 @@ struct Status {
     path: String,
     prompt: Option<String>,
     input: String,
+    ft: String,
 }
 
 impl Drawable for Status {
@@ -1071,7 +1118,7 @@ impl Drawable for Status {
             status::Status {
                 left,
                 center: "".to_string(),
-                right: "PrestoEdit".to_string(),
+                right: self.ft.clone() + &" | PrestoEdit".to_string(),
             },
             coords,
         )?;
@@ -1100,20 +1147,22 @@ impl Status {
             shift: false,
         };
 
-        loop {
-            if let Some(ev) = (drawer as &mut dyn drawer::Drawer).get_event() {
+        let mut done = false;
+
+        while !done {
+            for ev in (drawer as &mut dyn drawer::Drawer).get_events() {
                 match ev {
                     event::Event::Nav(mods, event::Nav::Escape) if mods == targ_none => {
                         self.prompt = None;
 
                         return Ok(None);
                     }
-                    event::Event::Nav(mods, event::Nav::Enter) if mods == targ_none => break,
+                    event::Event::Nav(mods, event::Nav::Enter) if mods == targ_none => done = true,
                     event::Event::Nav(mods, event::Nav::BackSpace) if mods == targ_none => {
                         _ = self.input.pop()
                     }
                     event::Event::Key(mods, c) if mods == targ_none => self.input.push(c),
-                    event::Event::Quit => break,
+                    event::Event::Quit => done = true,
                     _ => {}
                 }
             }
@@ -1150,6 +1199,7 @@ fn render<'a, 'c, 'd, 'e>(
         },
     )?;
     status.path = bu.get_path();
+    status.ft = format!("{:?}", bu.get_var(&"filetype".to_string()));
 
     status.draw(
         handle,
@@ -1235,9 +1285,9 @@ fn run_command<'a, 'b>(
             }
         }
         Command::Open(path) => {
-            let cont = read_to_string(&path).unwrap();
+            let cont = read_to_string(&path);
             let adds: Box<Buffer> = Box::new(FileBuffer {
-                filename: path,
+                filename: path.clone(),
                 cached: false,
                 data: Vec::new(),
                 pos: Vector { x: 0, y: 0 },
@@ -1246,8 +1296,10 @@ fn run_command<'a, 'b>(
                 height: 0,
             })
             .into();
+            if let Ok(c) = cont {
+                lsp.open_file(path, c)?;
+            }
             if bu.set_focused(&adds) {
-                lsp.open_file(cont);
                 *bu = adds;
             }
         }
@@ -1269,7 +1321,7 @@ fn run_command<'a, 'b>(
                 run_command(cmd, dr, bu, status, binds, colors, lsp)?;
             };
         }
-        Command::Close => match bu.close() {
+        Command::Close => match bu.close(lsp) {
             CloseKind::Replace(r) => *bu = r,
             CloseKind::This => *bu = Box::new(EmptyBuffer {}).into(),
             CloseKind::Done => {}
@@ -1286,7 +1338,15 @@ fn run_command<'a, 'b>(
         Command::Bind(s, Some(c)) => {
             binds.insert(s, *c);
         }
-        _ => todo!("{:?}", cmd),
+        Command::Set(s, None) => {
+            println!("{:?}", bu.get_var(&s));
+        }
+        Command::Set(s, Some(v)) => {
+            bu.set_var(s, v);
+        }
+        c => {
+            println!("todo{:?}", c)
+        }
     }
     Ok(())
 }
@@ -1305,33 +1365,64 @@ fn main() -> std::io::Result<()> {
     if args.cmd {
         drawer_box = Box::new(drawers::cli::CliDrawer { stdout: stdout() });
     } else {
-        let (mut rl, thread) = raylib::init()
-            .msaa_4x()
-            .resizable()
-            .title("Hello, World")
-            .build();
-        rl.set_target_fps(60);
-        drawer_box = Box::new(drawers::gui::GuiDrawer {
-            rl,
-            thread,
-            font: None,
-            cursor: std::cell::RefCell::new([
-                raylib::prelude::Vector2 { x: 0.0, y: 0.0 },
-                raylib::prelude::Vector2 { x: 1.0, y: 1.0 },
-                raylib::prelude::Vector2 { x: 1.0, y: 0.0 },
-                raylib::prelude::Vector2 { x: 0.0, y: 1.0 },
-            ]),
-            cursor_targ: std::cell::RefCell::new([
-                raylib::prelude::Vector2 { x: 0.0, y: 0.0 },
-                raylib::prelude::Vector2 { x: 1.0, y: 1.0 },
-                raylib::prelude::Vector2 { x: 1.0, y: 0.0 },
-                raylib::prelude::Vector2 { x: 0.0, y: 1.0 },
-            ]),
+        let mut glfw = glfw::init(glfw::fail_on_errors).unwrap();
+        glfw.window_hint(glfw::WindowHint::Samples(Some(4)));
+
+        let (mut win, events) = glfw
+            .create_window(1366, 768, "PrestoEdit", glfw::WindowMode::Windowed)
+            .unwrap();
+
+        unsafe {
+            load_gl_with(|f_name| win.get_proc_address(CStr::from_ptr(f_name).to_str().unwrap()))
+        }
+        win.make_current();
+        win.set_all_polling(true);
+
+        glfw.set_swap_interval(glfw::SwapInterval::Adaptive);
+
+        let font = drawers::gl::GlFont::new("font.ttf");
+
+        drawer_box = Box::new(drawers::gl::GlDrawer {
+            glfw,
+            win: std::cell::RefCell::new(win),
+            events,
+            size: Vector { x: 640, y: 480 },
+            font: std::cell::RefCell::new(font),
+            keys: HashMap::new(),
+            solid_program: std::cell::RefCell::new(None),
+            cursor: std::cell::RefCell::new([drawers::gl::Vector2 { x: 0.0, y: 0.0 }; 4]),
+            cursor_targ: std::cell::RefCell::new([drawers::gl::Vector2 { x: 0.0, y: 0.0 }; 4]),
             cursor_t: std::cell::RefCell::new([0.0; 4]),
         });
+
+        //let (mut rl, thread) = raylib::init()
+        //    .msaa_4x()
+        //    .resizable()
+        //    .title("PrestoEdit")
+        //    .build();
+        //rl.set_target_fps(60);
+        //drawer_box = Box::new(drawers::gui::GuiDrawer {
+        //    rl,
+        //    thread,
+        //    font: None,
+        //    cursor: std::cell::RefCell::new([
+        //        raylib::prelude::Vector2 { x: 0.0, y: 0.0 },
+        //        raylib::prelude::Vector2 { x: 1.0, y: 1.0 },
+        //        raylib::prelude::Vector2 { x: 1.0, y: 0.0 },
+        //        raylib::prelude::Vector2 { x: 0.0, y: 1.0 },
+        //    ]),
+        //    cursor_targ: std::cell::RefCell::new([
+        //        raylib::prelude::Vector2 { x: 0.0, y: 0.0 },
+        //        raylib::prelude::Vector2 { x: 1.0, y: 1.0 },
+        //        raylib::prelude::Vector2 { x: 1.0, y: 0.0 },
+        //        raylib::prelude::Vector2 { x: 0.0, y: 1.0 },
+        //    ]),
+        //    cursor_t: std::cell::RefCell::new([0.0; 4]),
+        //});
     };
 
     let drawer: &mut dyn drawer::Drawer = drawer_box.as_mut();
+    drawer.init()?;
 
     let mut binds = HashMap::new();
     let mut colors = HashMap::new();
@@ -1340,12 +1431,11 @@ fn main() -> std::io::Result<()> {
         path: "".to_string(),
         prompt: None,
         input: "".to_string(),
+        ft: "".to_string(),
     };
 
     let mut lsp = lsp::LSP::new();
-    lsp.init();
-
-    drawer.init()?;
+    lsp.init()?;
 
     let cmd = Command::parse("source /home/john/.config/prestoedit/init.pe".to_string());
     run_command(
@@ -1358,14 +1448,16 @@ fn main() -> std::io::Result<()> {
         &mut lsp,
     )?;
 
-    binds.insert("<:>".to_string(), Command::Run);
+    binds.insert("<S-:>".to_string(), Command::Run);
 
     render(drawer, bu.as_mut(), &mut status, &colors)?;
 
-    loop {
-        if let Some(ev) = drawer.get_event() {
+    let mut done = false;
+
+    while !done {
+        for ev in drawer.get_events() {
             match &ev {
-                event::Event::Quit => break,
+                event::Event::Quit => done = true,
                 _ => {
                     if let Some(cmd) = bind::check(&mut binds, &ev) {
                         run_command(

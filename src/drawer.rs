@@ -61,5 +61,5 @@ pub trait Drawer {
     ) -> std::io::Result<Box<dyn Handle + 'a>>;
 
     fn get_size(&self) -> std::io::Result<Vector>;
-    fn get_event(&mut self) -> Option<Event>;
+    fn get_events(&mut self) -> Vec<Event>;
 }

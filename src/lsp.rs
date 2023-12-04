@@ -1,4 +1,6 @@
 use crate::math::Vector;
+use json::object;
+use std::env;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -7,6 +9,10 @@ const BUFFER_SIZE: usize = 100;
 
 pub struct LSP {
     cmd: Child,
+}
+
+pub fn to_uri(s: String) -> String {
+    "file://".to_string() + &env::current_dir().unwrap().to_str().unwrap() + &"/".to_string() + &s
 }
 
 impl LSP {
@@ -20,16 +26,22 @@ impl LSP {
         }
     }
 
-    pub fn init(&mut self) {
+    pub fn init(&mut self) -> std::io::Result<()> {
         let stdout = self.cmd.stdout.as_mut().unwrap();
         let stdin = self.cmd.stdin.as_mut().unwrap();
         let mut stdout_reader = BufReader::new(stdout);
         let mut stdin_writer = BufWriter::new(stdin);
 
-        let content = "{\n\"jsonrpc\": \"2.0\",\n\"id\": 1,\n\"method\": \"initialize\",\n}";
+        let content = object! {
+            jsonrpc: "2.0",
+            id: "1",
+            method: "initialize",
+        }
+        .dump();
+
         stdin_writer
-            .write(format!("Content-Length: {}\r\n\r\n{}", content.len(), content).as_bytes());
-        stdin_writer.flush();
+            .write(format!("Content-Length: {}\r\n\r\n{}", content.len(), content).as_bytes())?;
+        stdin_writer.flush()?;
 
         let mut buffer = [0_u8; BUFFER_SIZE];
         let mut line = String::new();
@@ -70,21 +82,80 @@ impl LSP {
 
         result.extend(std::str::from_utf8(&buffer[..l]).unwrap().chars());
 
-        println!("{}", result);
+        Ok(())
     }
 
-    pub fn open_file(&mut self, content: String) {
-        let stdout = self.cmd.stdout.as_mut().unwrap();
+    pub fn open_file(&mut self, file: String, content: String) -> std::io::Result<()> {
         let stdin = self.cmd.stdin.as_mut().unwrap();
-        let mut stdout_reader = BufReader::new(stdout);
         let mut stdin_writer = BufWriter::new(stdin);
 
-        let content =
-            format!("{{\n\"jsonrpc\": \"2.0\",\n\"method\": \"textDocument/didOpen\", \"params\": {{\"textDocument\": {{\"uri\": \"lol.nim\", \"text\": \"{}\"}}\n}}\n}}\n", content);
+        let content = object! {
+            jsonrpc: "2.0",
+            method: "textDocument/didOpen",
+            params: {
+                textDocument: {
+                    languageId: "nim",
+                    version: 0,
+                    uri: to_uri(file),
+                    text: content,
+                }
+            }
+        }
+        .dump();
 
-        println!("{}", content);
         stdin_writer
-            .write(format!("Content-Length: {}\r\n\r\n{}", content.len(), content).as_bytes());
-        stdin_writer.flush();
+            .write(format!("Content-Length: {}\r\n\r\n{}", content.len(), content,).as_bytes())?;
+        stdin_writer.flush()?;
+
+        Ok(())
+    }
+
+    pub fn save_file(&mut self, file: String, content: String) -> std::io::Result<()> {
+        let stdin = self.cmd.stdin.as_mut().unwrap();
+        let mut stdin_writer = BufWriter::new(stdin);
+
+        let content = object! {
+            jsonrpc: "2.0",
+            method: "textDocument/didChange",
+            params: {
+                textDocument: {
+                    uri: to_uri(file)
+                },
+                contentChanges: [
+                    {
+                        text: content.clone(),
+                    }
+                ]
+            }
+        }
+        .dump();
+
+        stdin_writer
+            .write(format!("Content-Length: {}\r\n\r\n{}", content.len(), content).as_bytes())?;
+        stdin_writer.flush()?;
+
+        Ok(())
+    }
+
+    pub fn close_file(&mut self, file: String) -> std::io::Result<()> {
+        let stdin = self.cmd.stdin.as_mut().unwrap();
+        let mut stdin_writer = BufWriter::new(stdin);
+
+        let content = object! {
+            jsonrpc: "2.0",
+            method: "textDocument/didClose",
+            params: {
+                textDocument: {
+                    uri: to_uri(file),
+                }
+            }
+        }
+        .dump();
+
+        stdin_writer
+            .write(format!("Content-Length: {}\r\n\r\n{}", content.len(), content,).as_bytes())?;
+        stdin_writer.flush()?;
+
+        Ok(())
     }
 }

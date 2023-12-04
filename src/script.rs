@@ -27,6 +27,8 @@ pub enum Command {
     Source(String),
     Bind(String, Option<Box<Command>>),
     Highlight(String, Option<Color>),
+    Set(String, Option<String>),
+    Auto(String, String),
     Run,
     Close,
     Exit,
@@ -61,6 +63,22 @@ impl Command {
                     let cmd = Self::parse(c.to_string());
                     Command::Bind(s.to_string(), Some(Box::new(cmd)))
                 }
+                _ => Command::Incomplete(cmd),
+            },
+            Some("auto" | "a") => match (
+                split.next(),
+                split.map(|s| &*s).collect::<Vec<&str>>().join(" "),
+            ) {
+                (Some(s), c) if c.len() == 0 => Command::Set(s.to_string(), None),
+                (Some(s), c) => Command::Set(s.to_string(), Some(c)),
+                _ => Command::Incomplete(cmd),
+            },
+            Some("set") => match (
+                split.next(),
+                split.map(|s| &*s).collect::<Vec<&str>>().join(" "),
+            ) {
+                (Some(s), c) if c.len() == 0 => Command::Set(s.to_string(), None),
+                (Some(s), c) => Command::Set(s.to_string(), Some(c)),
                 _ => Command::Incomplete(cmd),
             },
             Some("quit" | "q") => Command::Close,

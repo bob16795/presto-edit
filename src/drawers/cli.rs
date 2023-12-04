@@ -227,7 +227,7 @@ impl Drawer for CliDrawer {
         })
     }
 
-    fn get_event(&mut self) -> Option<ev::Event> {
+    fn get_events(&mut self) -> Vec<ev::Event> {
         if event::poll(Duration::from_millis(500)).unwrap() {
             match event::read().unwrap() {
                 event::Event::Key(event::KeyEvent {
@@ -245,21 +245,21 @@ impl Drawer for CliDrawer {
                     match code {
                         event::KeyCode::Char(c) => {
                             if c == 'c' && mods.ctrl {
-                                return Some(ev::Event::Quit);
+                                return vec![ev::Event::Quit];
                             }
                             if ":".contains(c) {
                                 mods.shift = true;
                             }
-                            return Some(ev::Event::Key(mods, c));
+                            return vec![ev::Event::Key(mods, c)];
                         }
-                        event::KeyCode::Up => return Some(ev::Event::Nav(mods, ev::Nav::Up)),
-                        event::KeyCode::Down => return Some(ev::Event::Nav(mods, ev::Nav::Down)),
-                        event::KeyCode::Left => return Some(ev::Event::Nav(mods, ev::Nav::Left)),
-                        event::KeyCode::Right => return Some(ev::Event::Nav(mods, ev::Nav::Right)),
-                        event::KeyCode::Esc => return Some(ev::Event::Nav(mods, ev::Nav::Escape)),
-                        event::KeyCode::Enter => return Some(ev::Event::Nav(mods, ev::Nav::Enter)),
+                        event::KeyCode::Up => return vec![ev::Event::Nav(mods, ev::Nav::Up)],
+                        event::KeyCode::Down => return vec![ev::Event::Nav(mods, ev::Nav::Down)],
+                        event::KeyCode::Left => return vec![ev::Event::Nav(mods, ev::Nav::Left)],
+                        event::KeyCode::Right => return vec![ev::Event::Nav(mods, ev::Nav::Right)],
+                        event::KeyCode::Esc => return vec![ev::Event::Nav(mods, ev::Nav::Escape)],
+                        event::KeyCode::Enter => return vec![ev::Event::Nav(mods, ev::Nav::Enter)],
                         event::KeyCode::Backspace => {
-                            return Some(ev::Event::Nav(mods, ev::Nav::BackSpace))
+                            return vec![ev::Event::Nav(mods, ev::Nav::BackSpace)]
                         }
                         _ => {}
                     }
@@ -316,6 +316,6 @@ impl Drawer for CliDrawer {
                 _ => {}
             }
         }
-        None
+        vec![]
     }
 }

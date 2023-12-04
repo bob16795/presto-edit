@@ -1,13 +1,13 @@
 use crate::math::Vector;
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub struct Mods {
     pub ctrl: bool,
     pub alt: bool,
     pub shift: bool,
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone, Copy)]
 pub enum Nav {
     Up,
     Down,

@@ -8,6 +8,10 @@ edition = "2021"
 [dependencies]
 raylib = "3.7.0"
 clap = { version = "4.0", features = ["derive"] }
+glfw = "0.54.0"
+ogl33 = { version = "0.2.0", features = ["debug_error_checks"] }
+freetype-rs = "0.34.0"
+json = "0.12.4"
 
 [dependencies.crossterm]
 version = "0.26"
