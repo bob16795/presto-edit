@@ -28,7 +28,7 @@ pub enum Command {
     Bind(String, Option<Box<Command>>),
     Highlight(String, Option<Color>),
     Set(String, Option<String>),
-    Auto(String, String),
+    //Auto(String, String),
     Run,
     Close,
     Exit,

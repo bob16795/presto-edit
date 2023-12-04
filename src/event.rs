@@ -23,6 +23,6 @@ pub enum Event {
     Key(Mods, char),
     Nav(Mods, Nav),
     Save(Option<String>),
-    Mouse(Vector),
+    Mouse(Vector, i32),
     Quit,
 }

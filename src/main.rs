@@ -49,7 +49,7 @@ trait BufferFuncs: CloneBuffer {
     fn update(&mut self, size: Vector);
     fn draw_conts(&self, handle: &mut dyn drawer::Handle, coords: Rect) -> std::io::Result<()>;
     fn get_cursor(&mut self, size: Vector, char_size: Vector) -> CursorData;
-    fn event_process(&mut self, ev: event::Event, lsp: &mut lsp::LSP);
+    fn event_process(&mut self, ev: event::Event, lsp: &mut lsp::LSP, coords: Rect);
     fn nav(&mut self, dir: NavDir) -> bool;
     fn get_path(&self) -> String;
     fn set_focused(&mut self, child: &Box<Buffer>) -> bool;
@@ -131,8 +131,8 @@ impl Buffer {
         self.base.get_cursor(size, char_size)
     }
 
-    fn event_process(&mut self, ev: event::Event, lsp: &mut lsp::LSP) {
-        self.base.event_process(ev, lsp)
+    fn event_process(&mut self, ev: event::Event, lsp: &mut lsp::LSP, coords: Rect) {
+        self.base.event_process(ev, lsp, coords)
     }
 
     fn nav(&mut self, dir: NavDir) -> bool {
@@ -199,6 +199,7 @@ impl Measurement {
 struct TabbedBuffer {
     tabs: Vec<Box<Buffer>>,
     active: usize,
+    char_size: Vector,
 }
 
 impl BufferFuncs for TabbedBuffer {
@@ -214,8 +215,8 @@ impl BufferFuncs for TabbedBuffer {
 
     fn draw_conts(&self, handle: &mut dyn drawer::Handle, coords: Rect) -> std::io::Result<()> {
         let mut new_coords = coords;
-        new_coords.y += handle.get_char_size()?.y;
-        new_coords.h -= handle.get_char_size()?.y;
+        new_coords.y += self.char_size.y;
+        new_coords.h -= self.char_size.y;
 
         self.tabs[self.active].draw(handle, new_coords)?;
 
@@ -223,6 +224,7 @@ impl BufferFuncs for TabbedBuffer {
     }
 
     fn get_cursor(&mut self, size: Vector, char_size: Vector) -> CursorData {
+        self.char_size = char_size;
         let mut result = self.tabs[self.active].get_cursor(size, char_size);
         result.offset(Vector {
             x: 0,
@@ -231,8 +233,12 @@ impl BufferFuncs for TabbedBuffer {
         result
     }
 
-    fn event_process(&mut self, ev: event::Event, lsp: &mut lsp::LSP) {
-        self.tabs[self.active].event_process(ev, lsp);
+    fn event_process(&mut self, ev: event::Event, lsp: &mut lsp::LSP, coords: Rect) {
+        let mut new_coords = coords;
+        new_coords.y += self.char_size.y;
+        new_coords.h -= self.char_size.y;
+
+        self.tabs[self.active].event_process(ev, lsp, new_coords);
     }
 
     fn nav(&mut self, _dir: NavDir) -> bool {
@@ -450,7 +456,7 @@ impl BufferFuncs for SplitBuffer {
         }
     }
 
-    fn event_process(&mut self, ev: event::Event, lsp: &mut lsp::LSP) {
+    fn event_process(&mut self, ev: event::Event, lsp: &mut lsp::LSP, coords: Rect) {
         let targ = event::Mods {
             ctrl: true,
             alt: false,
@@ -464,13 +470,53 @@ impl BufferFuncs for SplitBuffer {
                 _ = self.nav(NavDir::Right)
             }
 
-            _ => {
-                if self.a_active {
-                    self.a.event_process(ev, lsp)
-                } else {
-                    self.b.event_process(ev, lsp)
+            event::Event::Mouse(pos, btn) => match self.split_dir {
+                SplitDir::Horizontal => {
+                    let mut new_coords = coords;
+                    new_coords.w /= 2;
+                    self.a_active = pos.x < new_coords.x + new_coords.w;
+                    if self.a_active {
+                        self.a.event_process(ev, lsp, new_coords);
+                    } else {
+                        new_coords.x += new_coords.w;
+                        self.b.event_process(ev, lsp, new_coords);
+                    }
                 }
-            }
+                SplitDir::Vertical => {
+                    let mut new_coords = coords;
+                    new_coords.h /= 2;
+                    self.a_active = pos.y < new_coords.y + new_coords.h;
+                    if self.a_active {
+                        self.a.event_process(ev, lsp, new_coords);
+                    } else {
+                        new_coords.y += new_coords.h;
+                        self.b.event_process(ev, lsp, new_coords);
+                    }
+                }
+            },
+
+            _ => match self.split_dir {
+                SplitDir::Horizontal => {
+                    let mut new_coords = coords;
+                    new_coords.w /= 2;
+                    if self.a_active {
+                        self.a.event_process(ev, lsp, new_coords);
+                    } else {
+                        new_coords.x += new_coords.w;
+                        self.b.event_process(ev, lsp, new_coords);
+                    }
+                }
+                SplitDir::Vertical => {
+                    let mut new_coords = coords;
+                    new_coords.h /= 2;
+                    if self.a_active {
+                        self.a.event_process(ev, lsp, new_coords);
+                    } else {
+                        new_coords.y += new_coords.h;
+                        self.b.event_process(ev, lsp, new_coords);
+                    }
+                }
+            },
         }
     }
 
@@ -699,7 +745,7 @@ impl BufferFuncs for TreeBuffer {
         }
     }
 
-    fn event_process(&mut self, _ev: event::Event, _lsp: &mut lsp::LSP) {}
+    fn event_process(&mut self, _ev: event::Event, _lsp: &mut lsp::LSP, _coords: Rect) {}
 
     fn nav(&mut self, _dir: NavDir) -> bool {
         return false;
@@ -747,7 +793,7 @@ impl BufferFuncs for TextBuffer {
         }
     }
 
-    fn event_process(&mut self, _ev: event::Event, _lsp: &mut lsp::LSP) {}
+    fn event_process(&mut self, _ev: event::Event, _lsp: &mut lsp::LSP, _coords: Rect) {}
 
     fn nav(&mut self, _dir: NavDir) -> bool {
         return false;
@@ -781,6 +827,7 @@ struct FileBuffer {
     scroll: i32,
     mode: FileMode,
     height: i32,
+    char_size: Vector,
 }
 
 impl BufferFuncs for FileBuffer {
@@ -818,10 +865,10 @@ impl BufferFuncs for FileBuffer {
         self.pos.x = self.pos.x.clamp(0, size.x - 6);
         self.pos.y = self.pos.y.clamp(0, self.data.len() as i32 - 1);
 
-        while self.pos.y - self.scroll < 5 && self.scroll > 0 {
+        while self.pos.y - self.scroll < 1 && self.scroll > 0 {
             self.scroll -= 1;
         }
-        while self.pos.y - self.scroll > self.height - 5 && self.scroll < self.data.len() as i32 {
+        while self.pos.y - self.scroll > self.height - 1 && self.scroll < self.data.len() as i32 {
             self.scroll += 1;
         }
         if self.pos.y < self.data.len() as i32 {
@@ -889,6 +936,8 @@ impl BufferFuncs for FileBuffer {
     fn get_cursor(&mut self, size: Vector, char_size: Vector) -> CursorData {
         self.height = size.y / char_size.y;
 
+        self.char_size = char_size;
+
         let mut result = CursorData::Show {
             pos: Vector {
                 x: self.pos.x * char_size.x,
@@ -909,7 +958,7 @@ impl BufferFuncs for FileBuffer {
         result
     }
 
-    fn event_process(&mut self, ev: event::Event, lsp: &mut lsp::LSP) {
+    fn event_process(&mut self, ev: event::Event, lsp: &mut lsp::LSP, coords: Rect) {
         let targ_none = event::Mods {
             ctrl: false,
             alt: false,
@@ -921,102 +970,77 @@ impl BufferFuncs for FileBuffer {
             shift: false,
         };
 
-        match self.mode {
-            FileMode::Insert => match ev {
-                event::Event::Nav(mods, event::Nav::Down) if mods == targ_none => {
-                    self.pos.y += 1;
-                    return;
-                }
-                event::Event::Nav(mods, event::Nav::Up) if mods == targ_none => {
-                    self.pos.y -= 1;
-                    return;
-                }
-                event::Event::Nav(mods, event::Nav::Left) if mods == targ_none => {
+        match (self.mode.clone(), ev) {
+            (_, event::Event::Nav(mods, event::Nav::Down)) if mods == targ_none => {
+                self.pos.y += 1;
+                return;
+            }
+            (_, event::Event::Nav(mods, event::Nav::Up)) if mods == targ_none => {
+                self.pos.y -= 1;
+                return;
+            }
+            (_, event::Event::Nav(mods, event::Nav::Left)) if mods == targ_none => {
+                self.pos.x -= 1;
+                return;
+            }
+            (_, event::Event::Nav(mods, event::Nav::Right)) if mods == targ_none => {
+                self.pos.x += 1;
+                return;
+            }
+            (FileMode::Insert, event::Event::Nav(mods, event::Nav::Enter)) if mods == targ_none => {
+                let next = self.data[self.pos.y as usize].split_off(self.pos.x as usize);
+                self.data.insert((self.pos.y + 1) as usize, next);
+                self.pos.x = 0;
+                self.pos.y += 1;
+
+                return;
+            }
+            (FileMode::Insert, event::Event::Nav(mods, event::Nav::BackSpace))
+                if mods == targ_none =>
+            {
+                if self.pos.x > 0 {
+                    self.data[self.pos.y as usize].remove((self.pos.x - 1) as usize);
                     self.pos.x -= 1;
-                    return;
-                }
-                event::Event::Nav(mods, event::Nav::Right) if mods == targ_none => {
-                    self.pos.x += 1;
-                    return;
-                }
-                event::Event::Nav(mods, event::Nav::Enter) if mods == targ_none => {
-                    let next = self.data[self.pos.y as usize].split_off(self.pos.x as usize);
-                    self.data.insert((self.pos.y + 1) as usize, next);
-                    self.pos.x = 0;
-                    self.pos.y += 1;
-
-                    return;
-                }
-                event::Event::Nav(mods, event::Nav::BackSpace) if mods == targ_none => {
-                    if self.pos.x > 0 {
-                        self.data[self.pos.y as usize].remove((self.pos.x - 1) as usize);
-                        self.pos.x -= 1;
-                    } else if self.pos.y > 0 {
-                        self.pos.x = self.data[(self.pos.y - 1) as usize].len() as i32;
-                        let adds = self.data[self.pos.y as usize].clone();
-                        self.data[(self.pos.y - 1) as usize].push_str(&adds);
-                        self.data.remove(self.pos.y as usize);
-                        self.pos.y -= 1;
-                    }
-
-                    return;
-                }
-                event::Event::Nav(mods, event::Nav::Escape) if mods == targ_none => {
-                    self.mode = FileMode::Normal;
-                }
-                event::Event::Save(None) => {
-                    let mut file = std::fs::File::create(self.filename.as_str()).unwrap();
-                    let mut conts: String = "".to_string();
-                    for line in &self.data {
-                        let _ = file.write(line.as_bytes());
-                        let _ = file.write(b"\n");
-                        conts += line;
-                        conts.push('\n');
-                    }
-
-                    lsp.save_file(self.filename.clone(), conts).unwrap();
-                }
-                event::Event::Key(mods, c) if mods == targ_none => {
-                    self.data[self.pos.y as usize].insert(self.pos.x as usize, c);
-                    self.pos.x += 1;
-                    return;
-                }
-                _ => {}
-            },
-            FileMode::Normal => match ev {
-                event::Event::Nav(mods, event::Nav::Down) if mods == targ_none => {
-                    self.pos.y += 1;
-                    return;
-                }
-                event::Event::Nav(mods, event::Nav::Up) if mods == targ_none => {
+                } else if self.pos.y > 0 {
+                    self.pos.x = self.data[(self.pos.y - 1) as usize].len() as i32;
+                    let adds = self.data[self.pos.y as usize].clone();
+                    self.data[(self.pos.y - 1) as usize].push_str(&adds);
+                    self.data.remove(self.pos.y as usize);
                     self.pos.y -= 1;
-                    return;
                 }
-                event::Event::Nav(mods, event::Nav::Left) if mods == targ_none => {
-                    self.pos.x -= 1;
-                    return;
-                }
-                event::Event::Nav(mods, event::Nav::Right) if mods == targ_none => {
-                    self.pos.x += 1;
-                    return;
-                }
-                event::Event::Key(mods, c) if mods == targ_none && c == 'i' => {
-                    self.mode = FileMode::Insert;
-                }
-                event::Event::Save(None) => {
-                    let mut file = std::fs::File::create(self.filename.as_str()).unwrap();
-                    let mut conts: String = "".to_string();
-                    for line in &self.data {
-                        let _ = file.write(line.as_bytes());
-                        let _ = file.write(b"\n");
-                        conts += line;
-                        conts.push('\n');
-                    }
 
-                    lsp.save_file(self.filename.clone(), conts).unwrap();
+                return;
+            }
+            (FileMode::Insert, event::Event::Nav(mods, event::Nav::Escape))
+                if mods == targ_none =>
+            {
+                self.mode = FileMode::Normal;
+            }
+            (_, event::Event::Save(None)) => {
+                let mut file = std::fs::File::create(self.filename.as_str()).unwrap();
+                let mut conts: String = "".to_string();
+                for line in &self.data {
+                    let _ = file.write(line.as_bytes());
+                    let _ = file.write(b"\n");
+                    conts += line;
+                    conts.push('\n');
                 }
-                _ => {}
-            },
+
+                lsp.save_file(self.filename.clone(), conts).unwrap();
+            }
+            (FileMode::Insert, event::Event::Key(mods, c)) if mods == targ_none => {
+                self.data[self.pos.y as usize].insert(self.pos.x as usize, c);
+                self.pos.x += 1;
+                return;
+            }
+            (FileMode::Normal, event::Event::Key(mods, c)) if mods == targ_none && c == 'i' => {
+                self.mode = FileMode::Insert;
+            }
+            (_, event::Event::Mouse(pos, btn)) => {
+                self.pos.x = (pos.x - coords.x) / self.char_size.x - 5;
+                self.pos.y = (pos.y - coords.y) / self.char_size.y + self.scroll;
+            }
+            _ => {}
         }
     }
 
@@ -1077,7 +1101,7 @@ impl BufferFuncs for EmptyBuffer {
         }
     }
 
-    fn event_process(&mut self, ev: event::Event, lsp: &mut lsp::LSP) {}
+    fn event_process(&mut self, _ev: event::Event, _lsp: &mut lsp::LSP, _coords: Rect) {}
 
     fn nav(&mut self, _dir: NavDir) -> bool {
         false
@@ -1198,6 +1222,16 @@ fn render<'a, 'c, 'd, 'e>(
             h: size.y as i32,
         },
     )?;
+
+    let cur = bu.get_cursor(
+        Vector {
+            x: size.x as i32,
+            y: size.y as i32,
+        },
+        handle.get_char_size()?,
+    );
+    handle.render_cursor(cur)?;
+
     status.path = bu.get_path();
     status.ft = format!("{:?}", bu.get_var(&"filetype".to_string()));
 
@@ -1210,16 +1244,6 @@ fn render<'a, 'c, 'd, 'e>(
             h: 1,
         },
     )?;
-
-    let cur = bu.get_cursor(
-        Vector {
-            x: size.x as i32,
-            y: size.y as i32,
-        },
-        handle.get_char_size()?,
-    );
-
-    handle.render_cursor(cur)?;
 
     handle.end()?;
 
@@ -1278,6 +1302,7 @@ fn run_command<'a, 'b>(
             let adds: Box<Buffer> = Box::new(TabbedBuffer {
                 tabs: vec![Box::new(EmptyBuffer {}).into()],
                 active: 0,
+                char_size: Vector { x: 1, y: 1 },
             })
             .into();
             if bu.set_focused(&adds) {
@@ -1294,6 +1319,7 @@ fn run_command<'a, 'b>(
                 scroll: 0,
                 mode: FileMode::Normal,
                 height: 0,
+                char_size: Vector { x: 0, y: 0 },
             })
             .into();
             if let Ok(c) = cont {
@@ -1304,7 +1330,16 @@ fn run_command<'a, 'b>(
             }
         }
         Command::Write(path) => {
-            bu.as_mut().event_process(event::Event::Save(path), lsp);
+            bu.as_mut().event_process(
+                event::Event::Save(path),
+                lsp,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: dr.get_size()?.x,
+                    h: dr.get_size()?.y,
+                },
+            );
         }
         Command::Source(path) => {
             let file = read_to_string(&path)?;
@@ -1393,6 +1428,12 @@ fn main() -> std::io::Result<()> {
             cursor: std::cell::RefCell::new([drawers::gl::Vector2 { x: 0.0, y: 0.0 }; 4]),
             cursor_targ: std::cell::RefCell::new([drawers::gl::Vector2 { x: 0.0, y: 0.0 }; 4]),
             cursor_t: std::cell::RefCell::new([0.0; 4]),
+            mods: event::Mods {
+                shift: false,
+                alt: false,
+                ctrl: false,
+            },
+            mouse: Vector { x: 0, y: 0 },
         });
 
         //let (mut rl, thread) = raylib::init()
@@ -1470,7 +1511,16 @@ fn main() -> std::io::Result<()> {
                             &mut lsp,
                         )?;
                     } else {
-                        bu.as_mut().event_process(ev, &mut lsp)
+                        bu.as_mut().event_process(
+                            ev,
+                            &mut lsp,
+                            Rect {
+                                x: 0,
+                                y: 0,
+                                w: drawer.get_size()?.x,
+                                h: drawer.get_size()?.y,
+                            },
+                        )
                     };
                 }
             }

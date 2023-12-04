@@ -800,6 +800,8 @@ pub struct GlDrawer {
     pub cursor: RefCell<[Vector2; 4]>,
     pub cursor_targ: RefCell<[Vector2; 4]>,
     pub cursor_t: RefCell<[f32; 4]>,
+    pub mods: ev::Mods,
+    pub mouse: Vector,
 }
 
 impl drawer::Drawer for GlDrawer {
@@ -890,14 +892,20 @@ impl drawer::Drawer for GlDrawer {
                     prg.set_uniform_int("width\0", w);
                     prg.set_uniform_int("height\0", h);
                 }
+                glfw::WindowEvent::Char(char) => {
+                    let ev = ev::Event::Key(self.mods.clone(), char);
+                    if !result.contains(&ev) {
+                        result.push(ev)
+                    }
+                }
                 glfw::WindowEvent::CharModifiers(char, mods) => {
-                    let mods = ev::Mods {
+                    self.mods = ev::Mods {
                         shift: mods.contains(glfw::Modifiers::Shift),
                         alt: mods.contains(glfw::Modifiers::Alt),
                         ctrl: mods.contains(glfw::Modifiers::Control),
                     };
 
-                    let ev = ev::Event::Key(mods, char);
+                    let ev = ev::Event::Key(self.mods.clone(), char);
                     if !result.contains(&ev) {
                         result.push(ev)
                     }
@@ -905,13 +913,16 @@ impl drawer::Drawer for GlDrawer {
                 glfw::WindowEvent::Key(k, _, glfw::Action::Press | glfw::Action::Repeat, mods)
                     if self.keys.contains_key(&k) =>
                 {
-                    let mods = ev::Mods {
+                    self.mods = ev::Mods {
                         shift: mods.contains(glfw::Modifiers::Shift),
                         alt: mods.contains(glfw::Modifiers::Alt),
                         ctrl: mods.contains(glfw::Modifiers::Control),
                     };
 
-                    result.push(ev::Event::Nav(mods, *self.keys.get(&k).unwrap()))
+                    result.push(ev::Event::Nav(
+                        self.mods.clone(),
+                        *self.keys.get(&k).unwrap(),
+                    ))
                 }
                 glfw::WindowEvent::Key(
                     key,
@@ -919,20 +930,58 @@ impl drawer::Drawer for GlDrawer {
                     glfw::Action::Press | glfw::Action::Repeat,
                     mods,
                 ) => {
-                    let mods = ev::Mods {
+                    self.mods = ev::Mods {
                         shift: mods.contains(glfw::Modifiers::Shift),
                         alt: mods.contains(glfw::Modifiers::Alt),
                         ctrl: mods.contains(glfw::Modifiers::Control),
                     };
 
                     if let Some(char) = glfw::get_key_name(Some(key), None) {
-                        if let Some(char) = char.chars().nth(0) {
-                            let ev = ev::Event::Key(mods, char);
+                        if let Some(mut ch) = char.chars().nth(0) {
+                            if self.mods.shift {
+                                if ch == '[' {
+                                    ch = '{';
+                                    self.mods.shift = false;
+                                } else if ch == ']' {
+                                    ch = '}';
+                                    self.mods.shift = false;
+                                } else if ch == '.' {
+                                    ch = '>';
+                                    self.mods.shift = false;
+                                } else if ch == ',' {
+                                    ch = '<';
+                                    self.mods.shift = false;
+                                } else if ch == ';' {
+                                    ch = ':';
+                                    self.mods.shift = false;
+                                } else if ch == '\'' {
+                                    ch = '"';
+                                    self.mods.shift = false;
+                                } else if ch.is_numeric() {
+                                    if let Some(new_ch) =
+                                        "!@#$%^&*()".chars().nth(ch as usize - '0' as usize)
+                                    {
+                                        ch = new_ch;
+                                        self.mods.shift = false;
+                                    }
+                                } else if let Some(new_ch) = ch.to_uppercase().nth(0) {
+                                    ch = new_ch;
+                                    self.mods.shift = false;
+                                };
+                            }
+                            let ev = ev::Event::Key(self.mods.clone(), ch);
                             if !result.contains(&ev) {
                                 result.push(ev)
                             }
                         }
                     }
+                }
+                glfw::WindowEvent::CursorPos(x, y) => {
+                    self.mouse.x = x as i32;
+                    self.mouse.y = y as i32;
+                }
+                glfw::WindowEvent::MouseButton(btn, glfw::Action::Press, _) => {
+                    result.push(ev::Event::Mouse(self.mouse, btn as i32))
                 }
                 _ => {}
             }
