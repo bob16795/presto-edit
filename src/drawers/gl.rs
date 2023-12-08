@@ -8,9 +8,11 @@ use freetype::face::LoadFlag;
 use freetype::*;
 use glfw;
 use glfw::Context;
+use image::io::Reader as ImageReader;
 use ogl33::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::Cursor;
 
 const TRAIL_SIZE: f32 = 10.0;
 const FONT_SIZE: u32 = 24;
@@ -46,16 +48,13 @@ pub struct CharData {
     th: f32,
     bearing: Vector,
     advance: i64,
-    ay: i64,
     size: Vector,
 }
 
 pub struct GlFont {
-    face: face::Face,
     size: i32,
     textures: Vec<u32>,
     chars: HashMap<char, CharData>,
-    spacing: i32,
     vao: u32,
     vbo: u32,
     program: helpers::ShaderProgram,
@@ -121,10 +120,15 @@ out vec4 out_color;
 
 uniform sampler2D tex;
 uniform vec4 color;
+uniform int image;
 
 void main()
 {    
-    out_color = color * vec4(1, 1, 1, 1.0);
+    out_color = texture(tex, TexCoords); 
+
+    if (image == 0) {
+        out_color = color;
+    }
 }  
 "#;
 
@@ -237,7 +241,6 @@ impl GlFont {
                     },
                     advance: face.glyph().advance().x,
                     tex: (textures.len() - 1) as i32,
-                    ay: face.glyph().advance().y,
                     tx: x as f32 / FONT_TEX_SIZE as f32,
                     ty: y as f32 / FONT_TEX_SIZE as f32,
                     tw: face.glyph().bitmap().width() as f32 / FONT_TEX_SIZE as f32,
@@ -280,38 +283,27 @@ impl GlFont {
         }
 
         GlFont {
-            face,
             size: FONT_SIZE as i32,
             textures,
             chars,
-            spacing: 0,
             vao,
             vbo,
             program,
         }
     }
 
-    fn render(&self, x: i32, y: i32, text: String, scale: f32, color: highlight::Color) {
+    fn render(&self, x: i32, y: i32, text: String, scale: f32, colors: Vec<highlight::Color>) {
         let mut pos = Vector {
             x,
             y: y + (self.size as f32 * scale) as i32,
         };
 
-        match color {
-            highlight::Color::Hex { r, g, b } => self.program.set_uniform_color(
-                "color\0",
-                [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0],
-            ),
-
-            _ => self
-                .program
-                .set_uniform_color("color\0", [1.0, 0.0, 0.0, 1.0]),
-        }
-
         unsafe {
             glActiveTexture(GL_TEXTURE0);
             glBindVertexArray(self.vao);
         }
+
+        let mut idx = 0;
 
         for c in text.chars() {
             if !self.chars.contains_key(&c) {
@@ -346,6 +338,19 @@ impl GlFont {
             self.program.use_program();
 
             unsafe {
+                match colors.iter().nth(idx) {
+                    Some(highlight::Color::Hex { r, g, b }) => self.program.set_uniform_color(
+                        "color\0",
+                        [*r as f32 / 255.0, *g as f32 / 255.0, *b as f32 / 255.0, 1.0],
+                    ),
+
+                    Some(_) => self
+                        .program
+                        .set_uniform_color("color\0", [1.0, 0.0, 0.0, 1.0]),
+
+                    _ => {}
+                }
+
                 glBindTexture(GL_TEXTURE_2D, self.textures[ch.tex as usize]);
 
                 glBindBuffer(GL_ARRAY_BUFFER, self.vbo);
@@ -355,6 +360,8 @@ impl GlFont {
                 // render quad
                 glDrawArrays(GL_TRIANGLES, 0, 6);
             }
+
+            idx += 1;
 
             pos.x += ((ch.advance >> 6) as f32 * scale) as i32;
         }
@@ -426,6 +433,7 @@ pub struct GlHandle<'a> {
     cursor_targ: &'a RefCell<[Vector2; 4]>,
     cursor_t: &'a RefCell<[f32; 4]>,
     colors: &'a HashMap<String, highlight::Color>,
+    images: &'a RefCell<HashMap<String, (u32, Vector)>>,
     size: Vector2,
 }
 
@@ -464,21 +472,106 @@ impl drawer::Handle for GlHandle<'_> {
                 let tmp_font = self.font.borrow_mut();
 
                 let mut y = bounds.y as f32;
-
                 for line in lines {
                     if y as i32 > bounds.y + bounds.h {
                         break;
                     }
 
-                    tmp_font.render(
-                        bounds.x,
-                        y as i32,
-                        line.chars.clone(),
-                        SCALE,
-                        self.get_color("fg".to_string()),
-                    );
+                    match line {
+                        drawer::Line::Image { path, height } => {
+                            let images = self.images.borrow_mut();
 
-                    y += tmp_font.size as f32 * SCALE;
+                            if images.get(&path) == None {
+                                let mut image: u32 = 0;
+
+                                let img = ImageReader::open(path.clone())?.decode().unwrap();
+                                let img = img.as_rgb8().unwrap();
+
+                                unsafe {
+                                    glGenTextures(1, &mut image);
+                                    glBindTexture(GL_TEXTURE_2D, image);
+                                    glTexImage2D(
+                                        GL_TEXTURE_2D,
+                                        0,
+                                        GL_RGBA as i32,
+                                        img.clone().width() as i32,
+                                        img.height() as i32,
+                                        0,
+                                        GL_RGBA,
+                                        GL_RGB8,
+                                        img.as_raw().as_ptr() as *const _,
+                                    );
+                                    glTexParameteri(
+                                        GL_TEXTURE_2D,
+                                        GL_TEXTURE_WRAP_S,
+                                        GL_CLAMP_TO_EDGE as i32,
+                                    );
+                                    glTexParameteri(
+                                        GL_TEXTURE_2D,
+                                        GL_TEXTURE_WRAP_T,
+                                        GL_CLAMP_TO_EDGE as i32,
+                                    );
+                                    glTexParameteri(
+                                        GL_TEXTURE_2D,
+                                        GL_TEXTURE_MIN_FILTER,
+                                        GL_NEAREST as i32,
+                                    );
+                                    glTexParameteri(
+                                        GL_TEXTURE_2D,
+                                        GL_TEXTURE_MAG_FILTER,
+                                        GL_NEAREST as i32,
+                                    );
+                                }
+                            }
+
+                            let ft = self.font.borrow_mut();
+
+                            let verts = [
+                                0.0, 0.0, 0.0, 0.0, 100.0, 100.0, 0.0, 0.0, 0.0, 100.0, 0.0, 0.0,
+                                0.0, 0.0, 0.0, 0.0, 100.0, 100.0, 0.0, 0.0, 100.0, 0.0, 0.0, 0.0,
+                            ];
+
+                            println!("{:?}", verts);
+
+                            unsafe {
+                                let img = images.get(&path).unwrap();
+                                glBindTexture(GL_TEXTURE_2D, img.0);
+
+                                glBindVertexArray(ft.vao);
+                                glBindBuffer(GL_ARRAY_BUFFER, ft.vbo);
+                                glBufferSubData(
+                                    GL_ARRAY_BUFFER,
+                                    0,
+                                    4 * 6 * 4,
+                                    (&verts).as_ptr() as *const _,
+                                );
+                                glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+                                // render quad
+                                glDrawArrays(GL_TRIANGLES, 0, 6);
+                            }
+                        }
+                        drawer::Line::Text {
+                            chars: line_chars,
+                            colors: line_colors,
+                        } => {
+                            tmp_font.render(
+                                bounds.x,
+                                y as i32,
+                                line_chars.clone(),
+                                SCALE,
+                                line_colors
+                                    .iter()
+                                    .map(|c| match c {
+                                        highlight::Color::Link(c) => self.get_color(c.to_string()),
+                                        _ => self.get_color("red".to_string()),
+                                    })
+                                    .collect(),
+                            );
+
+                            y += tmp_font.size as f32 * SCALE;
+                        }
+                    }
                 }
             }
             drawer::TextMode::Center => {
@@ -486,26 +579,171 @@ impl drawer::Handle for GlHandle<'_> {
 
                 let tmp_font = self.font.borrow_mut();
 
-                let sizey = FONT_SIZE as f32 * SCALE * lines.len() as f32;
+                let mut sizey = 0.0;
+                for l in &lines {
+                    match l {
+                        drawer::Line::Image { height, .. } => {
+                            sizey += *height as f32;
+                        }
+                        drawer::Line::Text { .. } => {
+                            sizey += FONT_SIZE as f32 * SCALE as f32;
+                        }
+                    }
+                }
 
                 let mut y = (bounds.y as f32 + (bounds.h as f32 - sizey) / 2.0) as f32;
+
+                let images = &mut self.images.borrow_mut();
 
                 for line in lines {
                     if y as i32 > bounds.y + bounds.h {
                         break;
                     }
 
-                    let w = cw as f32 * line.chars.len() as f32;
+                    match line {
+                        drawer::Line::Image { path, height } => {
+                            if images.get(&path) == None {
+                                let mut image: u32 = 0;
 
-                    tmp_font.render(
-                        bounds.x + ((bounds.w - w as i32) / 2),
-                        y as i32,
-                        line.chars.clone(),
-                        SCALE,
-                        self.get_color("fg".to_string()),
-                    );
+                                let img = ImageReader::open(path.clone())?.decode().unwrap();
+                                let img = img.to_rgba8();
 
-                    y += tmp_font.size as f32 * SCALE;
+                                unsafe {
+                                    glGenTextures(1, &mut image);
+                                    glBindTexture(GL_TEXTURE_2D, image);
+                                    glTexImage2D(
+                                        GL_TEXTURE_2D,
+                                        0,
+                                        GL_RGBA as i32,
+                                        img.clone().width() as i32,
+                                        img.clone().height() as i32,
+                                        0,
+                                        GL_RGBA,
+                                        GL_UNSIGNED_BYTE,
+                                        img.as_raw().as_ptr() as *const _,
+                                    );
+
+                                    glTexParameteri(
+                                        GL_TEXTURE_2D,
+                                        GL_TEXTURE_WRAP_S,
+                                        GL_CLAMP_TO_EDGE as i32,
+                                    );
+                                    glTexParameteri(
+                                        GL_TEXTURE_2D,
+                                        GL_TEXTURE_WRAP_T,
+                                        GL_CLAMP_TO_EDGE as i32,
+                                    );
+                                    glTexParameteri(
+                                        GL_TEXTURE_2D,
+                                        GL_TEXTURE_MIN_FILTER,
+                                        GL_NEAREST as i32,
+                                    );
+                                    glTexParameteri(
+                                        GL_TEXTURE_2D,
+                                        GL_TEXTURE_MAG_FILTER,
+                                        GL_NEAREST as i32,
+                                    );
+                                }
+
+                                let width = height as f32 / img.clone().height() as f32
+                                    * img.clone().width() as f32;
+
+                                images.insert(
+                                    path.clone(),
+                                    (
+                                        image,
+                                        Vector {
+                                            x: width as i32,
+                                            y: height as i32,
+                                        },
+                                    ),
+                                );
+                            }
+
+                            let img = images.get(&path).unwrap();
+
+                            let offset = Vector2 {
+                                x: (bounds.w as f32 - img.1.x as f32) / 2.0,
+                                y,
+                            };
+
+                            let verts: [f32; 4 * 6] = [
+                                bounds.x as f32 + offset.x,
+                                bounds.y as f32 + offset.y,
+                                0.0,
+                                0.0,
+                                (bounds.x + img.1.x) as f32 + offset.x,
+                                (bounds.y + img.1.y) as f32 + offset.y,
+                                1.0,
+                                1.0,
+                                bounds.x as f32 + offset.x,
+                                (bounds.y + img.1.y) as f32 + offset.y,
+                                0.0,
+                                1.0,
+                                bounds.x as f32 + offset.x,
+                                bounds.y as f32 + offset.y,
+                                0.0,
+                                0.0,
+                                (bounds.x + img.1.x) as f32 + offset.x,
+                                (bounds.y + img.1.y) as f32 + offset.y,
+                                1.0,
+                                1.0,
+                                (bounds.x + img.1.x) as f32 + offset.x,
+                                bounds.y as f32 + offset.y,
+                                1.0,
+                                0.0,
+                            ];
+
+                            let prg = self.program.clone();
+                            let mut prg = prg.borrow_mut();
+                            let prg = prg.as_mut().unwrap();
+                            prg.use_program();
+                            prg.set_uniform_int("image\0", 1);
+
+                            unsafe {
+                                glBindTexture(GL_TEXTURE_2D, img.0);
+
+                                glBindVertexArray(tmp_font.vao);
+                                glBindBuffer(GL_ARRAY_BUFFER, tmp_font.vbo);
+                                glBufferSubData(
+                                    GL_ARRAY_BUFFER,
+                                    0,
+                                    4 * 6 * 4,
+                                    (&verts).as_ptr() as *const _,
+                                );
+                                glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+                                // render quad
+                                glDrawArrays(GL_TRIANGLES, 0, 6);
+                            }
+
+                            prg.set_uniform_int("image\0", 0);
+
+                            y += img.1.y as f32;
+                        }
+                        drawer::Line::Text {
+                            chars: line_chars,
+                            colors: line_colors,
+                        } => {
+                            let w = cw as f32 * line_chars.len() as f32;
+
+                            tmp_font.render(
+                                bounds.x + ((bounds.w - w as i32) / 2),
+                                y as i32,
+                                line_chars.clone(),
+                                SCALE,
+                                line_colors
+                                    .iter()
+                                    .map(|c| match c {
+                                        highlight::Color::Link(c) => self.get_color(c.to_string()),
+                                        _ => self.get_color("red".to_string()),
+                                    })
+                                    .collect(),
+                            );
+
+                            y += tmp_font.size as f32 * SCALE;
+                        }
+                    }
                 }
             }
         }
@@ -517,7 +755,12 @@ impl drawer::Handle for GlHandle<'_> {
         Ok(())
     }
 
-    fn render_line(&self, start: Vector, end: Vector) -> std::io::Result<()> {
+    fn render_line(
+        &self,
+        start: Vector,
+        end: Vector,
+        color: highlight::Color,
+    ) -> std::io::Result<()> {
         let verts = [
             start.x as f32 - 1.0,
             start.y as f32 - 1.0,
@@ -552,7 +795,12 @@ impl drawer::Handle for GlHandle<'_> {
 
         let ft = self.font.borrow_mut();
 
-        if let highlight::Color::Hex { r, g, b } = self.get_color("line".to_string()) {
+        let color = match color {
+            highlight::Color::Link(l) => self.get_color(l),
+            c => c,
+        };
+
+        if let highlight::Color::Hex { r, g, b } = color {
             prg.set_uniform_color(
                 "color\0",
                 [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0],
@@ -570,6 +818,25 @@ impl drawer::Handle for GlHandle<'_> {
         }
 
         Ok(())
+    }
+
+    fn render_rect(
+        &self,
+        start: Vector,
+        size: Vector,
+        color: highlight::Color,
+    ) -> std::io::Result<()> {
+        self.render_line(
+            Vector {
+                x: start.x + 1,
+                y: start.y + 1,
+            },
+            Vector {
+                x: start.x + size.x - 2,
+                y: start.y + size.y - 2,
+            },
+            color,
+        )
     }
 
     fn render_cursor(&self, cur: drawer::CursorData) -> std::io::Result<()> {
@@ -698,7 +965,7 @@ impl drawer::Handle for GlHandle<'_> {
         Ok(())
     }
 
-    fn render_status(&self, st: Status, size: Rect) -> std::io::Result<()> {
+    fn render_status(&self, st: Status, _size: Rect) -> std::io::Result<()> {
         let verts = [
             0.0,
             self.size.y - self.get_char_size()?.y as f32 * 1.5,
@@ -759,7 +1026,7 @@ impl drawer::Handle for GlHandle<'_> {
             (self.size.y - h as f32 * 1.5) as i32,
             st.left,
             SCALE,
-            self.get_color("statusFg".to_string()),
+            vec![self.get_color("statusFg".to_string())],
         );
 
         ft.render(
@@ -767,7 +1034,7 @@ impl drawer::Handle for GlHandle<'_> {
             (self.size.y - h as f32 * 1.5) as i32,
             st.right,
             SCALE,
-            self.get_color("statusFg".to_string()),
+            vec![self.get_color("statusFg".to_string())],
         );
 
         Ok(())
@@ -800,6 +1067,7 @@ pub struct GlDrawer {
     pub cursor: RefCell<[Vector2; 4]>,
     pub cursor_targ: RefCell<[Vector2; 4]>,
     pub cursor_t: RefCell<[f32; 4]>,
+    pub images: RefCell<HashMap<String, (u32, Vector)>>,
     pub mods: ev::Mods,
     pub mouse: Vector,
 }
@@ -836,6 +1104,7 @@ impl drawer::Drawer for GlDrawer {
             cursor: &self.cursor,
             cursor_targ: &self.cursor_targ,
             cursor_t: &self.cursor_t,
+            images: &self.images,
             size: Vector2 {
                 x: self.size.x as f32,
                 y: self.size.y as f32,

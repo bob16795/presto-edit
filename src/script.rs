@@ -26,7 +26,7 @@ pub enum Command {
     Write(Option<String>),
     Source(String),
     Bind(String, Option<Box<Command>>),
-    Highlight(String, Option<Color>),
+    Highlight(Option<(String, Option<Color>)>),
     Set(String, Option<String>),
     //Auto(String, String),
     Run,
@@ -87,12 +87,12 @@ impl Command {
                 split.next(),
                 split.map(|s| &*s).collect::<Vec<&str>>().join(" "),
             ) {
-                (Some(s), c) if c.len() == 0 => Command::Highlight(s.to_string(), None),
+                (Some(s), c) if c.len() == 0 => Command::Highlight(Some((s.to_string(), None))),
                 (Some(s), c) => {
                     let color = parse_color(c.to_string()).unwrap();
-                    Command::Highlight(s.to_string(), Some(color))
+                    Command::Highlight(Some((s.to_string(), Some(color))))
                 }
-                _ => Command::Incomplete(cmd),
+                _ => Command::Highlight(None),
             },
             _ => Command::Unknown(cmd),
         }

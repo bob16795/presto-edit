@@ -12,6 +12,7 @@ glfw = "0.54.0"
 ogl33 = { version = "0.2.0", features = ["debug_error_checks"] }
 freetype-rs = "0.34.0"
 json = "0.12.4"
+image = "0.24.7"
 
 [dependencies.crossterm]
 version = "0.26"

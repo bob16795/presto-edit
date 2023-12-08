@@ -6,7 +6,7 @@ use crate::status::Status;
 use crossterm::queue;
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
-use crossterm::{cursor, event, execute, style, terminal, QueueableCommand};
+use crossterm::{cursor, event, execute, style, terminal};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{stdout, BufWriter, Stdout, Write};
@@ -26,7 +26,7 @@ impl Handle for CliHandle<'_> {
         Ok(())
     }
 
-    fn render_text(&self, lines: Vec<Line>, bounds: Rect, mode: TextMode) -> std::io::Result<()> {
+    fn render_text(&self, lines: Vec<Line>, bounds: Rect, _mode: TextMode) -> std::io::Result<()> {
         let mut tmp = self.stdout.borrow_mut();
 
         let mut idx = 0;
@@ -35,21 +35,49 @@ impl Handle for CliHandle<'_> {
                 break;
             }
 
-            let mut line = truncate(&l.chars, bounds.w as usize).to_string();
-            if line.len() != l.chars.len() {
-                let mut tmp = line.chars();
-                tmp.next_back();
-                line = (&tmp.as_str()).to_string() + ">";
-            }
+            match l {
+                Line::Image { .. } => {}
+                Line::Text {
+                    chars: line_chars,
+                    colors: line_colors,
+                } => {
+                    let mut line = truncate(&line_chars, bounds.w as usize).to_string();
+                    if line.len() != line_chars.len() {
+                        let mut tmp = line.chars();
+                        tmp.next_back();
+                        line = (&tmp.as_str()).to_string() + ">";
+                    }
 
-            let mut chars = line.chars();
+                    let mut chars = line.chars();
 
-            let mut last = highlight::Color::Base16(0);
-            let mut text = "".to_string();
-            let mut x = bounds.x;
+                    let mut last = highlight::Color::Base16(0);
+                    let mut text = "".to_string();
+                    let mut x = bounds.x;
 
-            for color in &l.colors[0..line.len()] {
-                if last != *color {
+                    for color in &line_colors[0..line.len()] {
+                        if last != *color {
+                            queue!(
+                                tmp,
+                                cursor::MoveTo(x as u16, bounds.y as u16 + idx as u16,),
+                                style::SetForegroundColor({
+                                    let last = highlight::get_color(self.colors, last);
+                                    match last {
+                                        Some(highlight::Color::Hex { r, g, b }) => {
+                                            style::Color::Rgb { r, g, b }
+                                        }
+                                        _ => style::Color::White,
+                                    }
+                                }),
+                                style::Print(&text)
+                            )?;
+                            last = color.clone();
+                            x += text.len() as i32;
+                            text = "".to_string();
+                            text.push(chars.next().unwrap());
+                        } else {
+                            text.push(chars.next().unwrap());
+                        }
+                    }
                     queue!(
                         tmp,
                         cursor::MoveTo(x as u16, bounds.y as u16 + idx as u16,),
@@ -62,37 +90,32 @@ impl Handle for CliHandle<'_> {
                                 _ => style::Color::White,
                             }
                         }),
-                        style::Print(&text)
+                        style::Print(text),
+                        style::ResetColor,
                     )?;
-                    last = color.clone();
-                    x += text.len() as i32;
-                    text = "".to_string();
-                    text.push(chars.next().unwrap());
-                } else {
-                    text.push(chars.next().unwrap());
                 }
             }
-            queue!(
-                tmp,
-                cursor::MoveTo(x as u16, bounds.y as u16 + idx as u16,),
-                style::SetForegroundColor({
-                    let last = highlight::get_color(self.colors, last);
-                    match last {
-                        Some(highlight::Color::Hex { r, g, b }) => style::Color::Rgb { r, g, b },
-                        _ => style::Color::White,
-                    }
-                }),
-                style::Print(text),
-                style::ResetColor,
-            )?;
-
             idx += 1;
         }
 
         Ok(())
     }
 
-    fn render_line(&self, start: Vector, end: Vector) -> std::io::Result<()> {
+    fn render_rect(
+        &self,
+        _start: Vector,
+        _end: Vector,
+        _color: highlight::Color,
+    ) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn render_line(
+        &self,
+        start: Vector,
+        end: Vector,
+        _color: highlight::Color,
+    ) -> std::io::Result<()> {
         let dir = if start.x < end.x {
             Vector { x: 1, y: 0 }
         } else if start.x > end.x {

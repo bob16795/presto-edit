@@ -1,10 +1,3 @@
-use core::ffi::CStr;
-use core::mem::transmute;
-use core::ptr::null_mut;
-use core::ptr::NonNull;
-use core::sync::atomic::AtomicPtr;
-use core::sync::atomic::Ordering;
-
 use ogl33::*;
 
 /// The types of shader object.
@@ -15,11 +8,6 @@ pub enum ShaderType {
     ///
     /// Also other values, but mostly color.
     Fragment = GL_FRAGMENT_SHADER as isize,
-
-    // geom shaders
-    Geometry = GL_GEOMETRY_SHADER as isize,
-
-    Compute = 0x91B9 as isize,
 }
 
 /// A handle to a [Shader
@@ -211,46 +199,6 @@ impl ShaderProgram {
         }
     }
 
-    pub fn from_compute(compute: &str) -> Result<Self, String> {
-        let p = Self::new().ok_or_else(|| "Couldn't allocate a program".to_string())?;
-        let c = Shader::from_source(ShaderType::Compute, compute)
-            .map_err(|e| format!("Compute Compile Error: {}", e))?;
-        p.attach_shader(&c);
-        p.link_program();
-        c.delete();
-        if p.link_success() {
-            Ok(p)
-        } else {
-            let out = format!("Program Link Error: {}", p.info_log());
-            p.delete();
-            Err(out)
-        }
-    }
-
-    pub fn from_vert_geom_frag(vert: &str, geom: &str, frag: &str) -> Result<Self, String> {
-        let p = Self::new().ok_or_else(|| "Couldn't allocate a program".to_string())?;
-        let v = Shader::from_source(ShaderType::Vertex, vert)
-            .map_err(|e| format!("Vertex Compile Error: {}", e))?;
-        let g = Shader::from_source(ShaderType::Geometry, geom)
-            .map_err(|e| format!("Geometry Compile Error: {}", e))?;
-        let f = Shader::from_source(ShaderType::Fragment, frag)
-            .map_err(|e| format!("Fragment Compile Error: {}", e))?;
-        p.attach_shader(&v);
-        p.attach_shader(&g);
-        p.attach_shader(&f);
-        p.link_program();
-        v.delete();
-        g.delete();
-        f.delete();
-        if p.link_success() {
-            Ok(p)
-        } else {
-            let out = format!("Program Link Error: {}", p.info_log());
-            p.delete();
-            Err(out)
-        }
-    }
-
     pub fn set_uniform_color(&self, name: &str, value: [GLfloat; 4]) {
         self.use_program();
         unsafe {
@@ -264,22 +212,6 @@ impl ShaderProgram {
         unsafe {
             let loc = glGetUniformLocation(self.0, name.as_ptr() as *const i8);
             glUniform1i(loc, value);
-        }
-    }
-
-    pub fn set_uniform_tex(&self, name: &str, value: GLint) {
-        self.use_program();
-        unsafe {
-            let loc = glGetUniformLocation(self.0, name.as_ptr() as *const i8);
-            glUniform1i(loc, value);
-        }
-    }
-
-    pub fn set_uniform_float(&self, name: &str, value: f32) {
-        self.use_program();
-        unsafe {
-            let loc = glGetUniformLocation(self.0, name.as_ptr() as *const i8);
-            glUniform1f(loc, value);
         }
     }
 }

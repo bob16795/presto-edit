@@ -4,6 +4,10 @@ use crate::math::{Rect, Vector};
 use crate::status::Status;
 use std::collections::HashMap;
 
+pub trait Drawable {
+    fn draw(&self, handle: &mut dyn Handle, coords: Rect) -> std::io::Result<()>;
+}
+
 #[derive(PartialEq)]
 pub enum CursorStyle {
     Block,
@@ -36,14 +40,15 @@ pub enum TextMode {
     Center,
 }
 
-pub struct Line {
-    pub chars: String,
-    pub colors: Vec<Color>,
+pub enum Line {
+    Text { chars: String, colors: Vec<Color> },
+    Image { path: String, height: usize },
 }
 
 pub trait Handle {
     fn render_text(&self, lines: Vec<Line>, bounds: Rect, mode: TextMode) -> std::io::Result<()>;
-    fn render_line(&self, start: Vector, end: Vector) -> std::io::Result<()>;
+    fn render_line(&self, start: Vector, end: Vector, color: Color) -> std::io::Result<()>;
+    fn render_rect(&self, start: Vector, size: Vector, color: Color) -> std::io::Result<()>;
     fn render_cursor(&self, cur: CursorData) -> std::io::Result<()>;
     fn render_status(&self, st: Status, size: Rect) -> std::io::Result<()>;
     fn get_char_size(&self) -> std::io::Result<Vector>;

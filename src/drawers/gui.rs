@@ -119,19 +119,28 @@ impl drawer::Handle for GuiHandle<'_, '_, '_, '_> {
                         break;
                     }
 
-                    let size = measure_text_ex(self.font, &lines[line].chars, FONT_SIZE, 0.0).x;
+                    match &lines[line] {
+                        drawer::Line::Image { .. } => {}
+                        drawer::Line::Text {
+                            chars: line_chars,
+                            colors: line_colors,
+                        } => {
+                            let size = measure_text_ex(self.font, &line_chars, FONT_SIZE, 0.0).x;
 
-                    tmp.draw_text_ex(
-                        self.font,
-                        &lines[line].chars,
-                        Vector2 {
-                            x: ((bounds.x as f32 + (bounds.w as f32 - size) / 2.0) as i32) as f32,
-                            y: y as f32,
-                        },
-                        FONT_SIZE,
-                        0.0,
-                        self.get_color("fg".to_string()),
-                    );
+                            tmp.draw_text_ex(
+                                self.font,
+                                &line_chars,
+                                Vector2 {
+                                    x: ((bounds.x as f32 + (bounds.w as f32 - size) / 2.0) as i32)
+                                        as f32,
+                                    y: y as f32,
+                                },
+                                FONT_SIZE,
+                                0.0,
+                                self.get_color("fg".to_string()),
+                            );
+                        }
+                    }
                     line += 1;
                     y += FONT_SIZE as i32;
                 }
@@ -147,18 +156,54 @@ impl drawer::Handle for GuiHandle<'_, '_, '_, '_> {
                 let mut line = 0;
 
                 while y < bounds.y + bounds.h {
-                    if line >= lines.len() {
-                        break;
-                    }
+                    match &lines[line] {
+                        drawer::Line::Image { .. } => {}
+                        drawer::Line::Text {
+                            chars: line_chars,
+                            colors: line_colors,
+                        } => {
+                            if line >= lines.len() {
+                                break;
+                            }
 
-                    let mut chars = lines[line].chars.chars();
+                            let mut chars = line_chars.chars();
 
-                    let mut last_color = highlight::Color::Base16(0);
-                    let mut text = "".to_string();
-                    let mut x = bounds.x;
+                            let mut last_color = highlight::Color::Base16(0);
+                            let mut text = "".to_string();
+                            let mut x = bounds.x;
 
-                    for color in &lines[line].colors[0..lines[line].chars.len()] {
-                        if last_color != *color {
+                            for color in &line_colors[0..line_chars.len()] {
+                                if last_color != *color {
+                                    tmp.draw_text_ex(
+                                        self.font,
+                                        &text,
+                                        Vector2 {
+                                            x: x as f32,
+                                            y: y as f32,
+                                        },
+                                        FONT_SIZE,
+                                        0.0,
+                                        match highlight::get_color(self.colors, last_color) {
+                                            Some(highlight::Color::Hex { r, g, b }) => {
+                                                Color { r, g, b, a: 255 }
+                                            }
+                                            _ => Color {
+                                                r: 255,
+                                                g: 0,
+                                                b: 255,
+                                                a: 255,
+                                            },
+                                        },
+                                    );
+                                    last_color = color.clone();
+                                    let size = measure_text_ex(self.font, &text, FONT_SIZE, 0.0).x;
+                                    x += size as i32;
+                                    text = "".to_string();
+                                    text.push(chars.next().unwrap());
+                                } else {
+                                    text.push(chars.next().unwrap());
+                                }
+                            }
                             tmp.draw_text_ex(
                                 self.font,
                                 &text,
@@ -180,37 +225,11 @@ impl drawer::Handle for GuiHandle<'_, '_, '_, '_> {
                                     },
                                 },
                             );
-                            last_color = color.clone();
-                            let size = measure_text_ex(self.font, &text, FONT_SIZE, 0.0).x;
-                            x += size as i32;
-                            text = "".to_string();
-                            text.push(chars.next().unwrap());
-                        } else {
-                            text.push(chars.next().unwrap());
+
+                            line += 1;
+                            y += FONT_SIZE as i32;
                         }
                     }
-                    tmp.draw_text_ex(
-                        self.font,
-                        &text,
-                        Vector2 {
-                            x: x as f32,
-                            y: y as f32,
-                        },
-                        FONT_SIZE,
-                        0.0,
-                        match highlight::get_color(self.colors, last_color) {
-                            Some(highlight::Color::Hex { r, g, b }) => Color { r, g, b, a: 255 },
-                            _ => Color {
-                                r: 255,
-                                g: 0,
-                                b: 255,
-                                a: 255,
-                            },
-                        },
-                    );
-
-                    line += 1;
-                    y += FONT_SIZE as i32;
                 }
 
                 Ok(())
@@ -218,7 +237,12 @@ impl drawer::Handle for GuiHandle<'_, '_, '_, '_> {
         }
     }
 
-    fn render_line(&self, start: Vector, end: Vector) -> std::io::Result<()> {
+    fn render_line(
+        &self,
+        start: Vector,
+        end: Vector,
+        _color: highlight::Color,
+    ) -> std::io::Result<()> {
         let mut tmp = self.h.borrow_mut();
 
         tmp.draw_line_ex(
@@ -234,6 +258,15 @@ impl drawer::Handle for GuiHandle<'_, '_, '_, '_> {
             self.get_color("fg".to_string()),
         );
 
+        Ok(())
+    }
+
+    fn render_rect(
+        &self,
+        start: Vector,
+        size: Vector,
+        color: highlight::Color,
+    ) -> std::io::Result<()> {
         Ok(())
     }
 
