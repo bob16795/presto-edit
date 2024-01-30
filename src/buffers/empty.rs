@@ -15,7 +15,7 @@ impl BufferFuncs for EmptyBuffer {
         handle.render_text(
             vec![
                 drawer::Line::Image {
-                    path: "lol.png".to_string(),
+                    path: "!!logo".to_string(),
                     height: 128,
                 },
                 create_line("        EMPTY BUFFER        ".to_string()),

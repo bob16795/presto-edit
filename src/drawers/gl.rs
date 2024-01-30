@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::io::Cursor;
 
 const TRAIL_SIZE: f32 = 10.0;
-const FONT_SIZE: u32 = 24;
+const FONT_SIZE: u32 = 32;
 const SCALE: f32 = 0.75;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -85,15 +85,15 @@ uniform sampler2D tex;
 uniform vec4 color;
 
 void main()
-{    
-    float dist = (0.5 - texture(tex, TexCoords).r);
+{
+    float dist = (0.5 - texture(tex, TexCoords).r) * 2;
     vec2 duv = fwidth(TexCoords);
 
-    float dtex = length(duv * 64);
+    float dtex = length(duv * 48);
     
-    float pixelDist = dist * 2 / dtex;
+    float pixelDist = dist / dtex;
 
-    float alpha = clamp(0.5 - pixelDist, 0, 1);
+    float alpha = 0.5 - clamp(pixelDist, -1, 1) * 0.5;
     out_color = color * vec4(1, 1, 1, alpha);
 }  
 "#;
@@ -604,9 +604,23 @@ impl drawer::Handle for GlHandle<'_> {
                         drawer::Line::Image { path, height } => {
                             if images.get(&path) == None {
                                 let mut image: u32 = 0;
+                                let img;
 
-                                let img = ImageReader::open(path.clone())?.decode().unwrap();
-                                let img = img.to_rgba8();
+                                if path.starts_with("!!") {
+                                    match (path.as_str()) {
+                                        "!!logo" => {
+                                            img = ImageReader::new(Cursor::new(
+                                                include_bytes!("../assets/logo.png").to_vec(),
+                                            ));
+                                        }
+                                        _ => todo!(),
+                                    }
+                                } else {
+                                    img =
+                                        ImageReader::new(Cursor::new(std::fs::read(path.clone())?));
+                                }
+
+                                let img = img.with_guessed_format()?.decode().unwrap().to_rgba8();
 
                                 unsafe {
                                     glGenTextures(1, &mut image);

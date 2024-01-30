@@ -1,12 +1,10 @@
 use clap::Parser;
 use core::ffi::CStr;
-use lazy_static::lazy_static;
-use shellexpand;
-use std::borrow::Cow;
+use dirs;
 use std::collections::HashMap;
-use std::fs::read_to_string;
+use std::fs;
 use std::io::stdout;
-use std::path::Path;
+use std::path;
 
 use glfw;
 use glfw::Context;
@@ -46,6 +44,7 @@ use crate::buffers::tabbed::*;
 use crate::drawer::Drawable;
 use crate::math::*;
 use crate::script::{Command, SplitKind};
+const DEFAULT_CONFIG: &str = include_str!("assets/default_config.pe");
 
 pub struct Status {
     path: String,
@@ -213,7 +212,7 @@ fn run_command<'a, 'b>(cmd: Command, data: &mut data::Data) -> std::io::Result<(
             }
         }
         Command::Open(path) => {
-            let cont = read_to_string(&path);
+            let cont = fs::read_to_string(&path);
             let adds: Box<Buffer> = Box::new(FileBuffer {
                 filename: path.clone(),
                 cached: false,
@@ -246,18 +245,15 @@ fn run_command<'a, 'b>(cmd: Command, data: &mut data::Data) -> std::io::Result<(
         }
         Command::Source(path) => {
             let path = if path.starts_with("~") {
-                lazy_static! {
-                    static ref HOME_DIR: String = std::env::var("HOME").unwrap();
-                }
-
-                HOME_DIR.to_string() + path.strip_prefix("~").unwrap()
+                dirs::home_dir().unwrap_or("~".into()).display().to_string()
+                    + path.strip_prefix("~").unwrap()
             } else {
                 path
             };
 
             println!("source: {}", path);
 
-            let file = read_to_string(&path)?;
+            let file = fs::read_to_string(&path)?;
             for line in file.lines() {
                 let cmd = Command::parse(line.to_string());
 
@@ -422,8 +418,21 @@ fn main() -> std::io::Result<()> {
         auto,
         lsp,
     };
+    let mut config_dir = dirs::config_dir().unwrap_or(path::PathBuf::from("."));
+    config_dir.push("prestoedit");
+    let mut config_file = config_dir.clone();
+    config_file.push("init");
+    config_file.set_extension("pe");
 
-    let cmd = Command::parse("source ~/.config/prestoedit/init.pe".to_string());
+    if !fs::metadata(config_dir.clone()).is_ok() {
+        fs::create_dir(config_dir);
+    }
+
+    if !fs::metadata(config_file.clone()).is_ok() {
+        fs::write(config_file.clone(), DEFAULT_CONFIG);
+    }
+
+    let cmd = Command::parse(format!("source {}", config_file.display()));
     run_command(cmd, &mut data)?;
 
     data.binds.insert("<S-:>".to_string(), Command::Run);
