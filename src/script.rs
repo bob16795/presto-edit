@@ -28,7 +28,7 @@ pub enum Command {
     Bind(String, Option<Box<Command>>),
     Highlight(Option<(String, Option<Color>)>),
     Set(String, Option<String>),
-    //Auto(String, String),
+    Auto(String, String, String),
     Run,
     Close,
     Exit,
@@ -38,7 +38,7 @@ impl Command {
     pub fn parse(cmd: String) -> Self {
         let mut split = cmd.split_whitespace();
         match split.next() {
-            Some("source") => match split.next() {
+            Some("source" | "src") => match split.next() {
                 Some(s) => Command::Source(s.to_string()),
                 None => Command::Incomplete(cmd),
             },
@@ -67,10 +67,10 @@ impl Command {
             },
             Some("auto" | "a") => match (
                 split.next(),
+                split.next(),
                 split.map(|s| &*s).collect::<Vec<&str>>().join(" "),
             ) {
-                (Some(s), c) if c.len() == 0 => Command::Set(s.to_string(), None),
-                (Some(s), c) => Command::Set(s.to_string(), Some(c)),
+                (Some(s), Some(t), c) => Command::Auto(s.to_string(), t.to_string(), c),
                 _ => Command::Incomplete(cmd),
             },
             Some("set") => match (

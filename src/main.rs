@@ -1,8 +1,12 @@
 use clap::Parser;
 use core::ffi::CStr;
+use lazy_static::lazy_static;
+use shellexpand;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::read_to_string;
 use std::io::stdout;
+use std::path::Path;
 
 use glfw;
 use glfw::Context;
@@ -18,6 +22,7 @@ mod buffers {
     pub mod tabbed;
     pub mod tree;
 }
+mod data;
 mod drawer;
 mod drawers {
     pub mod cli;
@@ -42,7 +47,7 @@ use crate::drawer::Drawable;
 use crate::math::*;
 use crate::script::{Command, SplitKind};
 
-struct Status {
+pub struct Status {
     path: String,
     prompt: Option<String>,
     input: String,
@@ -69,69 +74,59 @@ impl drawer::Drawable for Status {
     }
 }
 
-impl Status {
-    fn prompt<'a>(
-        &mut self,
-        input: String,
-        drawer: &mut dyn drawer::Drawer,
-        bu: &mut Box<Buffer>,
-        default: String,
-        colors: &'a HashMap<String, highlight::Color>,
-    ) -> std::io::Result<Option<String>> {
-        self.prompt = Some(input);
-        self.input = default;
+fn prompt<'a>(
+    data: &mut data::Data,
+    input: String,
+    default: String,
+) -> std::io::Result<Option<String>> {
+    data.status.prompt = Some(input);
+    data.status.input = default;
 
-        render(drawer, bu.as_mut(), self, colors)?;
+    render(data)?;
 
-        let targ_none = event::Mods {
-            ctrl: false,
-            alt: false,
-            shift: false,
-        };
+    let targ_none = event::Mods {
+        ctrl: false,
+        alt: false,
+        shift: false,
+    };
 
-        let mut done = false;
+    let mut done = false;
 
-        while !done {
-            for ev in (drawer as &mut dyn drawer::Drawer).get_events() {
-                match ev {
-                    event::Event::Nav(mods, event::Nav::Escape) if mods == targ_none => {
-                        self.prompt = None;
+    while !done {
+        for ev in data.dr.get_events() {
+            match ev {
+                event::Event::Nav(mods, event::Nav::Escape) if mods == targ_none => {
+                    data.status.prompt = None;
 
-                        return Ok(None);
-                    }
-                    event::Event::Nav(mods, event::Nav::Enter) if mods == targ_none => done = true,
-                    event::Event::Nav(mods, event::Nav::BackSpace) if mods == targ_none => {
-                        _ = self.input.pop()
-                    }
-                    event::Event::Key(mods, c) if mods == targ_none => self.input.push(c),
-                    event::Event::Quit => done = true,
-                    _ => {}
+                    return Ok(None);
                 }
+                event::Event::Nav(mods, event::Nav::Enter) if mods == targ_none => done = true,
+                event::Event::Nav(mods, event::Nav::BackSpace) if mods == targ_none => {
+                    _ = data.status.input.pop()
+                }
+                event::Event::Key(mods, c) if mods == targ_none => data.status.input.push(c),
+                event::Event::Quit => done = true,
+                _ => {}
             }
-            render(drawer, bu.as_mut(), self, colors)?;
         }
-
-        self.prompt = None;
-
-        render(drawer, bu.as_mut(), self, colors)?;
-
-        Ok(Some(self.input.clone()))
+        render(data)?;
     }
+
+    data.status.prompt = None;
+
+    render(data)?;
+
+    Ok(Some(data.status.input.clone()))
 }
 
-fn render<'a, 'c, 'd, 'e>(
-    drawer: &mut dyn drawer::Drawer,
-    bu: &'a mut Buffer,
-    status: &'c mut Status,
-    colors: &'e HashMap<String, highlight::Color>,
-) -> std::io::Result<()> {
-    let size = drawer.get_size()?;
-    bu.update(size);
+fn render(data: &mut data::Data) -> std::io::Result<()> {
+    let size = data.dr.get_size()?;
+    data.bu.update(size);
 
-    let mut handle = drawer.begin(colors)?;
+    let mut handle = data.dr.begin(&data.colors)?;
     let handle = handle.as_mut();
 
-    bu.draw(
+    data.bu.draw(
         handle,
         Rect {
             x: 0,
@@ -141,7 +136,7 @@ fn render<'a, 'c, 'd, 'e>(
         },
     )?;
 
-    let cur = bu.get_cursor(
+    let cur = data.bu.get_cursor(
         Vector {
             x: size.x as i32,
             y: size.y as i32,
@@ -150,10 +145,10 @@ fn render<'a, 'c, 'd, 'e>(
     );
     handle.render_cursor(cur)?;
 
-    status.path = bu.get_path();
-    status.ft = format!("{:?}", bu.get_var(&"filetype".to_string()));
+    data.status.path = data.bu.get_path();
+    data.status.ft = format!("{:?}", data.bu.get_var(&"filetype".to_string()));
 
-    status.draw(
+    data.status.draw(
         handle,
         Rect {
             x: 0,
@@ -168,24 +163,14 @@ fn render<'a, 'c, 'd, 'e>(
     Ok(())
 }
 
-fn run_command<'a, 'b>(
-    cmd: Command,
-    dr: &mut dyn drawer::Drawer,
-    bu: &mut Box<Buffer>,
-    status: &mut Status,
-    binds: &mut HashMap<String, Command>,
-    colors: &mut HashMap<String, highlight::Color>,
-    lsp: &mut lsp::LSP,
-) -> std::io::Result<()> {
+fn run_command<'a, 'b>(cmd: Command, data: &mut data::Data) -> std::io::Result<()> {
     match cmd {
         Command::Unknown(_) => {}
         Command::Incomplete(cmd) => {
-            if let Some(cmd) =
-                status.prompt("".to_string(), dr, bu, cmd.to_string() + " ", colors)?
-            {
+            if let Some(cmd) = prompt(data, "".to_string(), cmd.to_string() + " ")? {
                 let cmd = Command::parse(cmd);
 
-                run_command(cmd, dr, bu, status, binds, colors, lsp)?;
+                run_command(cmd, data)?;
             };
         }
         Command::Split(SplitKind::Horizontal) => {
@@ -198,8 +183,8 @@ fn run_command<'a, 'b>(
                 char_size: Vector { x: 1, y: 1 },
             })
             .into();
-            if bu.set_focused(&adds) {
-                *bu = adds;
+            if data.bu.set_focused(&adds) {
+                data.bu = adds;
             }
         }
         Command::Split(SplitKind::Vertical) => {
@@ -212,8 +197,8 @@ fn run_command<'a, 'b>(
                 char_size: Vector { x: 1, y: 1 },
             })
             .into();
-            if bu.set_focused(&adds) {
-                *bu = adds;
+            if data.bu.set_focused(&adds) {
+                data.bu = adds;
             }
         }
         Command::Split(SplitKind::Tabbed) => {
@@ -223,8 +208,8 @@ fn run_command<'a, 'b>(
                 char_size: Vector { x: 1, y: 1 },
             })
             .into();
-            if bu.set_focused(&adds) {
-                *bu = adds;
+            if data.bu.set_focused(&adds) {
+                data.bu = adds;
             }
         }
         Command::Open(path) => {
@@ -241,71 +226,92 @@ fn run_command<'a, 'b>(
             })
             .into();
             if let Ok(c) = cont {
-                lsp.open_file(path, c)?;
+                data.lsp.open_file(path, c)?;
             }
-            if bu.set_focused(&adds) {
-                *bu = adds;
+            if data.bu.set_focused(&adds) {
+                data.bu = adds;
             }
         }
         Command::Write(path) => {
-            bu.as_mut().event_process(
+            data.bu.as_mut().event_process(
                 event::Event::Save(path),
-                lsp,
+                &mut data.lsp,
                 Rect {
                     x: 0,
                     y: 0,
-                    w: dr.get_size()?.x,
-                    h: dr.get_size()?.y,
+                    w: data.dr.get_size()?.x,
+                    h: data.dr.get_size()?.y,
                 },
             );
         }
         Command::Source(path) => {
+            let path = if path.starts_with("~") {
+                lazy_static! {
+                    static ref HOME_DIR: String = std::env::var("HOME").unwrap();
+                }
+
+                HOME_DIR.to_string() + path.strip_prefix("~").unwrap()
+            } else {
+                path
+            };
+
+            println!("source: {}", path);
+
             let file = read_to_string(&path)?;
             for line in file.lines() {
                 let cmd = Command::parse(line.to_string());
 
-                run_command(cmd, dr, bu, status, binds, colors, lsp)?;
+                run_command(cmd, data)?;
             }
         }
         Command::Run => {
-            if let Some(cmd) = status.prompt("".to_string(), dr, bu, "".to_string(), &colors)? {
+            if let Some(cmd) = prompt(data, "".to_string(), "".to_string())? {
                 let cmd = Command::parse(cmd);
 
-                run_command(cmd, dr, bu, status, binds, colors, lsp)?;
+                run_command(cmd, data)?;
             };
         }
-        Command::Close => match bu.close(lsp) {
-            CloseKind::Replace(r) => *bu = r,
-            CloseKind::This => *bu = Box::new(EmptyBuffer {}).into(),
+        Command::Close => match data.bu.close(&mut data.lsp) {
+            CloseKind::Replace(r) => data.bu = r,
+            CloseKind::This => data.bu = Box::new(EmptyBuffer {}).into(),
             CloseKind::Done => {}
         },
         Command::Highlight(None) => {
             let adds: Box<Buffer> = Box::new(HighlightBuffer {
-                colors: colors.clone(),
+                colors: data.colors.clone(),
             })
             .into();
 
-            if bu.set_focused(&adds) {
-                *bu = adds;
+            if data.bu.set_focused(&adds) {
+                data.bu = adds;
             }
         }
         Command::Highlight(Some((s, None))) => {
-            colors.remove(&s);
+            data.colors.remove(&s);
         }
         Command::Highlight(Some((s, Some(c)))) => {
-            colors.insert(s, c);
+            data.colors.insert(s, c);
         }
         Command::Bind(s, None) => {
-            binds.remove(&s);
+            data.binds.remove(&s);
         }
         Command::Bind(s, Some(c)) => {
-            binds.insert(s, *c);
+            data.binds.insert(s, *c);
         }
         Command::Set(s, None) => {
-            println!("{:?}", bu.get_var(&s));
+            println!("{:?}", data.bu.get_var(&s));
         }
         Command::Set(s, Some(v)) => {
-            bu.set_var(s, v);
+            if let Some(cmd) = data.auto.get(&(s.clone(), v.clone())) {
+                let cmd = Command::parse(cmd.to_string());
+
+                run_command(cmd, data)?;
+            };
+
+            data.bu.set_var(s, v);
+        }
+        Command::Auto(var, val, cmd) => {
+            data.auto.insert((var, val), cmd);
         }
         c => {
             println!("todo{:?}", c)
@@ -323,10 +329,10 @@ struct Cli {
 fn main() -> std::io::Result<()> {
     let args = Cli::parse();
 
-    let mut drawer_box: Box<dyn drawer::Drawer>;
+    let mut dr: Box<dyn drawer::Drawer>;
 
     if args.cmd {
-        drawer_box = Box::new(drawers::cli::CliDrawer { stdout: stdout() });
+        dr = Box::new(drawers::cli::CliDrawer { stdout: stdout() });
     } else {
         let mut glfw = glfw::init(glfw::fail_on_errors).unwrap();
         glfw.window_hint(glfw::WindowHint::Samples(Some(4)));
@@ -345,7 +351,7 @@ fn main() -> std::io::Result<()> {
 
         let font = drawers::gl::GlFont::new("font.ttf");
 
-        drawer_box = Box::new(drawers::gl::GlDrawer {
+        dr = Box::new(drawers::gl::GlDrawer {
             glfw,
             win: std::cell::RefCell::new(win),
             events,
@@ -391,13 +397,13 @@ fn main() -> std::io::Result<()> {
         //});
     };
 
-    let drawer: &mut dyn drawer::Drawer = drawer_box.as_mut();
-    drawer.init()?;
+    dr.init()?;
 
-    let mut binds = HashMap::new();
-    let mut colors = HashMap::new();
-    let mut bu: Box<Buffer> = Box::new(EmptyBuffer {}).into();
-    let mut status = Status {
+    let binds = HashMap::new();
+    let colors = HashMap::new();
+    let auto = HashMap::new();
+    let bu: Box<Buffer> = Box::new(EmptyBuffer {}).into();
+    let status = Status {
         path: "".to_string(),
         prompt: None,
         input: "".to_string(),
@@ -407,57 +413,51 @@ fn main() -> std::io::Result<()> {
     let mut lsp = lsp::LSP::new();
     lsp.init()?;
 
-    let cmd = Command::parse("source /home/john/.config/prestoedit/init.pe".to_string());
-    run_command(
-        cmd,
-        drawer,
-        &mut bu,
-        &mut status,
-        &mut binds,
-        &mut colors,
-        &mut lsp,
-    )?;
+    let mut data = data::Data {
+        dr,
+        bu,
+        status,
+        binds,
+        colors,
+        auto,
+        lsp,
+    };
 
-    binds.insert("<S-:>".to_string(), Command::Run);
+    let cmd = Command::parse("source ~/.config/prestoedit/init.pe".to_string());
+    run_command(cmd, &mut data)?;
 
-    render(drawer, bu.as_mut(), &mut status, &colors)?;
+    data.binds.insert("<S-:>".to_string(), Command::Run);
+
+    render(&mut data)?;
 
     let mut done = false;
 
     while !done {
-        for ev in drawer.get_events() {
+        for ev in data.dr.get_events() {
             match &ev {
                 event::Event::Quit => done = true,
                 _ => {
-                    if let Some(cmd) = bind::check(&mut binds, &ev) {
-                        run_command(
-                            cmd,
-                            drawer,
-                            &mut bu,
-                            &mut status,
-                            &mut binds,
-                            &mut colors,
-                            &mut lsp,
-                        )?;
+                    if let Some(cmd) = bind::check(&mut data.binds, &ev) {
+                        run_command(cmd, &mut data)?;
                     } else {
-                        bu.as_mut().event_process(
+                        data.bu.as_mut().event_process(
                             ev,
-                            &mut lsp,
+                            &mut data.lsp,
                             Rect {
                                 x: 0,
                                 y: 0,
-                                w: drawer.get_size()?.x,
-                                h: drawer.get_size()?.y,
+                                w: data.dr.get_size()?.x,
+                                h: data.dr.get_size()?.y,
                             },
                         )
                     };
                 }
             }
         }
-        render(drawer, bu.as_mut(), &mut status, &colors)?;
+        render(&mut data)?;
     }
 
-    drawer.deinit()?;
+    data.dr.deinit()?;
 
     Ok(())
 }

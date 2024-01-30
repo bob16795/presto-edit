@@ -27,7 +27,7 @@ pub struct FileBuffer {
 
 impl BufferFuncs for FileBuffer {
     fn setup(&mut self, base: &mut Buffer) {
-        base.vars.insert(
+        base.set_var(
             "filetype".to_string(),
             self.filename
                 .split('/')
