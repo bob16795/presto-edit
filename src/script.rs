@@ -7,6 +7,12 @@ pub enum SplitKind {
     Tabbed,
 }
 
+#[derive(Debug, Clone)]
+pub enum Open {
+    Text,
+    Hex,
+}
+
 impl SplitKind {
     pub fn parse(cmd: String) -> Self {
         match cmd.to_lowercase().as_str() {
@@ -22,7 +28,7 @@ pub enum Command {
     Unknown(String),
     Incomplete(String),
     Split(SplitKind),
-    Open(String),
+    Open(String, Open),
     Write(Option<String>),
     Source(String),
     Bind(String, Option<Box<Command>>),
@@ -46,8 +52,12 @@ impl Command {
                 Some(s) => Command::Split(SplitKind::parse(s.to_string())),
                 None => Command::Incomplete(cmd),
             },
+            Some("openhex" | "oh") => match split.next() {
+                Some(s) => Command::Open(s.to_string(), Open::Hex),
+                None => Command::Incomplete(cmd),
+            },
             Some("open" | "o") => match split.next() {
-                Some(s) => Command::Open(s.to_string()),
+                Some(s) => Command::Open(s.to_string(), Open::Text),
                 None => Command::Incomplete(cmd),
             },
             Some("write" | "w") => match split.next() {

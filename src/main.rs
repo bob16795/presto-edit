@@ -15,6 +15,7 @@ mod buffer;
 mod buffers {
     pub mod empty;
     pub mod file;
+    pub mod hex;
     pub mod hl;
     pub mod split;
     pub mod tabbed;
@@ -38,12 +39,13 @@ mod status;
 use crate::buffer::*;
 use crate::buffers::empty::*;
 use crate::buffers::file::*;
+use crate::buffers::hex::*;
 use crate::buffers::hl::*;
 use crate::buffers::split::*;
 use crate::buffers::tabbed::*;
 use crate::drawer::Drawable;
 use crate::math::*;
-use crate::script::{Command, SplitKind};
+use crate::script::{Command, Open, SplitKind};
 const DEFAULT_CONFIG: &str = include_str!("assets/default_config.pe");
 
 pub struct Status {
@@ -211,7 +213,7 @@ fn run_command<'a, 'b>(cmd: Command, data: &mut data::Data) -> std::io::Result<(
                 data.bu = adds;
             }
         }
-        Command::Open(path) => {
+        Command::Open(path, Open::Text) => {
             let cont = fs::read_to_string(&path);
             let adds: Box<Buffer> = Box::new(FileBuffer {
                 filename: path.clone(),
@@ -227,6 +229,22 @@ fn run_command<'a, 'b>(cmd: Command, data: &mut data::Data) -> std::io::Result<(
             if let Ok(c) = cont {
                 data.lsp.open_file(path, c)?;
             }
+            if data.bu.set_focused(&adds) {
+                data.bu = adds;
+            }
+        }
+        Command::Open(path, Open::Hex) => {
+            let adds: Box<Buffer> = Box::new(HexBuffer {
+                filename: path.clone(),
+                cached: false,
+                data: Vec::new(),
+                pos: Vector { x: 0, y: 0 },
+                scroll: 0,
+                mode: HexMode::Normal,
+                height: 0,
+                char_size: Vector { x: 0, y: 0 },
+            })
+            .into();
             if data.bu.set_focused(&adds) {
                 data.bu = adds;
             }
