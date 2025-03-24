@@ -3,10 +3,7 @@ use crate::drawer;
 use crate::event;
 use crate::highlight;
 use crate::lsp;
-use crate::math::*;
 use std::collections::HashMap;
-use std::fs::read_to_string;
-use std::io::Write;
 
 #[derive(Clone)]
 pub struct HighlightBuffer {
@@ -14,19 +11,19 @@ pub struct HighlightBuffer {
 }
 
 impl BufferFuncs for HighlightBuffer {
-    fn update(&mut self, size: Vector) {}
+    fn update(&mut self, _size: Vector) {}
 
     fn draw_conts(&self, handle: &mut dyn drawer::Handle, coords: Rect) -> std::io::Result<()> {
         let mut lines = Vec::new();
 
-        for (c, v) in &self.colors {
+        for (c, _v) in &self.colors {
             let mut lc = Vec::new();
             for _ in 0..6 {
                 lc.push(highlight::Color::Link(c.to_string()));
             }
             lc.push(highlight::Color::Link("fg".to_string()));
 
-            for ch in c.chars() {
+            for _ in c.chars() {
                 lc.push(highlight::Color::Link("fg".to_string()));
             }
 
@@ -41,13 +38,13 @@ impl BufferFuncs for HighlightBuffer {
         Ok(())
     }
 
-    fn get_cursor(&mut self, size: Vector, char_size: Vector) -> drawer::CursorData {
+    fn get_cursor(&mut self, _size: Vector, _char_size: Vector) -> drawer::CursorData {
         drawer::CursorData::Hidden
     }
 
-    fn event_process(&mut self, ev: event::Event, lsp: &mut lsp::LSP, coords: Rect) {}
+    fn event_process(&mut self, _ev: event::Event, _lsp: &mut lsp::LSP, _coords: Rect) {}
 
-    fn nav(&mut self, dir: NavDir) -> bool {
+    fn nav(&mut self, _dir: NavDir) -> bool {
         false
     }
 
@@ -55,11 +52,11 @@ impl BufferFuncs for HighlightBuffer {
         "Highlight".to_string()
     }
 
-    fn set_focused(&mut self, child: &Box<Buffer>) -> bool {
+    fn set_focused(&mut self, _child: &Box<Buffer>) -> bool {
         true
     }
 
-    fn close(&mut self, lsp: &mut lsp::LSP) -> CloseKind {
+    fn close(&mut self, _lsp: &mut lsp::LSP) -> CloseKind {
         CloseKind::This
     }
 }

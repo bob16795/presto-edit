@@ -3,7 +3,6 @@ use crate::drawer;
 use crate::drawer::Drawable;
 use crate::event;
 use crate::lsp;
-use crate::math::*;
 use crate::EmptyBuffer;
 
 #[derive(Clone)]

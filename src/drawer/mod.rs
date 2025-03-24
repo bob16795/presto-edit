@@ -4,6 +4,11 @@ use crate::math::{Rect, Vector};
 use crate::status::Status;
 use std::collections::HashMap;
 
+pub mod cli;
+pub mod gl;
+pub mod gui;
+pub mod helpers;
+
 pub trait Drawable {
     fn draw(&self, handle: &mut dyn Handle, coords: Rect) -> std::io::Result<()>;
 }

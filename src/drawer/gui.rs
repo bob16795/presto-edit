@@ -123,7 +123,7 @@ impl drawer::Handle for GuiHandle<'_, '_, '_, '_> {
                         drawer::Line::Image { .. } => {}
                         drawer::Line::Text {
                             chars: line_chars,
-                            colors: line_colors,
+                            colors: _line_colors,
                         } => {
                             let size = measure_text_ex(self.font, &line_chars, FONT_SIZE, 0.0).x;
 
@@ -263,9 +263,9 @@ impl drawer::Handle for GuiHandle<'_, '_, '_, '_> {
 
     fn render_rect(
         &self,
-        start: Vector,
-        size: Vector,
-        color: highlight::Color,
+        _start: Vector,
+        _size: Vector,
+        _color: highlight::Color,
     ) -> std::io::Result<()> {
         Ok(())
     }

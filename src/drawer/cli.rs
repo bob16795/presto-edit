@@ -153,9 +153,14 @@ impl Handle for CliHandle<'_> {
 
         match cur {
             CursorData::Show { pos, kind, .. } => {
+                let size = terminal::size()?;
+
                 queue!(
                     tmp,
-                    cursor::MoveTo(pos.x as u16, pos.y as u16),
+                    cursor::MoveTo(
+                        pos.x.clamp(0, size.0.into()) as u16,
+                        pos.y.clamp(0, size.1.into()) as u16
+                    ),
                     match kind {
                         CursorStyle::Block => cursor::SetCursorStyle::SteadyBlock,
                         CursorStyle::Bar => cursor::SetCursorStyle::BlinkingBar,

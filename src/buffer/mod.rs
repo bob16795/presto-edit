@@ -5,6 +5,15 @@ use crate::lsp;
 use crate::math::*;
 use std::collections::HashMap;
 
+pub mod empty;
+pub mod file;
+pub mod hex;
+pub mod hl;
+pub mod logview;
+pub mod split;
+pub mod tabbed;
+//pub mod tree;
+
 #[derive(Debug, Copy, Clone)]
 pub enum NavDir {
     Up,
@@ -36,6 +45,8 @@ pub trait BufferFuncs: CloneBuffer {
     fn get_path(&self) -> String;
     fn set_focused(&mut self, child: &Box<Buffer>) -> bool;
     fn close(&mut self, lsp: &mut lsp::LSP) -> CloseKind;
+
+    fn setup_lsp(&mut self, _lsp: &mut lsp::LSP) {}
 
     fn focused_child(&mut self) -> Option<&mut Buffer> {
         None
@@ -134,6 +145,10 @@ impl Buffer {
 
     pub fn is_empty(&mut self) -> bool {
         self.base.is_empty()
+    }
+
+    pub fn setup_lsp(&mut self, lsp: &mut lsp::LSP) {
+        self.base.setup_lsp(lsp);
     }
 }
 

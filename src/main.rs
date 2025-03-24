@@ -1,10 +1,12 @@
 use clap::Parser;
 use core::ffi::CStr;
 use dirs;
+use log::{error, info, warn};
 use std::collections::HashMap;
 use std::fs;
 use std::io::stdout;
 use std::path;
+use std::sync::Mutex;
 
 use glfw;
 use glfw::Context;
@@ -12,40 +14,28 @@ use ogl33::*;
 
 mod bind;
 mod buffer;
-mod buffers {
-    pub mod empty;
-    pub mod file;
-    pub mod hex;
-    pub mod hl;
-    pub mod split;
-    pub mod tabbed;
-    pub mod tree;
-}
 mod data;
 mod drawer;
-mod drawers {
-    pub mod cli;
-    pub mod gl;
-    pub mod gui;
-    pub mod helpers;
-}
 mod event;
 mod highlight;
+mod logging;
 mod lsp;
 mod math;
 mod script;
 mod status;
 
-use crate::buffer::*;
-use crate::buffers::empty::*;
-use crate::buffers::file::*;
-use crate::buffers::hex::*;
-use crate::buffers::hl::*;
-use crate::buffers::split::*;
-use crate::buffers::tabbed::*;
-use crate::drawer::Drawable;
-use crate::math::*;
-use crate::script::{Command, Open, SplitKind};
+use buffer::empty::*;
+use buffer::file::*;
+use buffer::hex::*;
+use buffer::hl::*;
+use buffer::logview::*;
+use buffer::split::*;
+use buffer::tabbed::*;
+use buffer::*;
+use drawer::Drawable;
+use math::*;
+use script::{Command, Open, SplitKind};
+
 const DEFAULT_CONFIG: &str = include_str!("assets/default_config.pe");
 
 pub struct Status {
@@ -166,7 +156,11 @@ fn render(data: &mut data::Data) -> std::io::Result<()> {
 
 fn run_command<'a, 'b>(cmd: Command, data: &mut data::Data) -> std::io::Result<()> {
     match cmd {
-        Command::Unknown(_) => {}
+        Command::Unknown(s) => {
+            if s != "" {
+                warn!("unknown command: {}", s);
+            }
+        }
         Command::Incomplete(cmd) => {
             if let Some(cmd) = prompt(data, "".to_string(), cmd.to_string() + " ")? {
                 let cmd = Command::parse(cmd);
@@ -186,6 +180,7 @@ fn run_command<'a, 'b>(cmd: Command, data: &mut data::Data) -> std::io::Result<(
             .into();
             if data.bu.set_focused(&adds) {
                 data.bu = adds;
+                info!("Split pane horizontal");
             }
         }
         Command::Split(SplitKind::Vertical) => {
@@ -200,6 +195,7 @@ fn run_command<'a, 'b>(cmd: Command, data: &mut data::Data) -> std::io::Result<(
             .into();
             if data.bu.set_focused(&adds) {
                 data.bu = adds;
+                info!("Split pane vertical");
             }
         }
         Command::Split(SplitKind::Tabbed) => {
@@ -211,9 +207,11 @@ fn run_command<'a, 'b>(cmd: Command, data: &mut data::Data) -> std::io::Result<(
             .into();
             if data.bu.set_focused(&adds) {
                 data.bu = adds;
+                info!("Split tabbed");
             }
         }
         Command::Open(path, Open::Text) => {
+            let new_path = path.clone();
             let cont = fs::read_to_string(&path);
             let adds: Box<Buffer> = Box::new(FileBuffer {
                 filename: path.clone(),
@@ -224,13 +222,15 @@ fn run_command<'a, 'b>(cmd: Command, data: &mut data::Data) -> std::io::Result<(
                 mode: FileMode::Normal,
                 height: 0,
                 char_size: Vector { x: 0, y: 0 },
+                highlight: Vec::new(),
             })
             .into();
             if let Ok(c) = cont {
-                data.lsp.open_file(path, c)?;
+                data.lsp.lock().unwrap().open_file(path, c)?;
             }
             if data.bu.set_focused(&adds) {
                 data.bu = adds;
+                info!("Opened file {}", new_path);
             }
         }
         Command::Open(path, Open::Hex) => {
@@ -247,6 +247,7 @@ fn run_command<'a, 'b>(cmd: Command, data: &mut data::Data) -> std::io::Result<(
             .into();
             if data.bu.set_focused(&adds) {
                 data.bu = adds;
+                info!("Opened hex {}", path);
             }
         }
         Command::Write(path) => {
@@ -269,13 +270,14 @@ fn run_command<'a, 'b>(cmd: Command, data: &mut data::Data) -> std::io::Result<(
                 path
             };
 
-            println!("source: {}", path);
+            info!("source config {}", path);
 
             let file = fs::read_to_string(&path)?;
             for line in file.lines() {
-                let cmd = Command::parse(line.to_string());
-
-                run_command(cmd, data)?;
+                if let Some(cmd) = line.split("//").next() {
+                    let cmd = Command::parse(cmd.trim().to_string());
+                    run_command(cmd, data)?;
+                }
             }
         }
         Command::Run => {
@@ -287,9 +289,20 @@ fn run_command<'a, 'b>(cmd: Command, data: &mut data::Data) -> std::io::Result<(
         }
         Command::Close => match data.bu.close(&mut data.lsp) {
             CloseKind::Replace(r) => data.bu = r,
-            CloseKind::This => data.bu = Box::new(EmptyBuffer {}).into(),
+            CloseKind::This => {
+                info!("Closed buffer {}", data.bu.get_path());
+                data.bu = Box::new(EmptyBuffer {}).into();
+            }
             CloseKind::Done => {}
         },
+        Command::Log => {
+            let adds: Box<Buffer> = Box::new(LogViewBuffer {}).into();
+
+            if data.bu.set_focused(&adds) {
+                data.bu = adds;
+                info!("Opened log");
+            }
+        }
         Command::Highlight(None) => {
             let adds: Box<Buffer> = Box::new(HighlightBuffer {
                 colors: data.colors.clone(),
@@ -313,7 +326,7 @@ fn run_command<'a, 'b>(cmd: Command, data: &mut data::Data) -> std::io::Result<(
             data.binds.insert(s, *c);
         }
         Command::Set(s, None) => {
-            println!("{:?}", data.bu.get_var(&s));
+            info!("vale {} is {:?}", s, data.bu.get_var(&s));
         }
         Command::Set(s, Some(v)) => {
             if let Some(cmd) = data.auto.get(&(s.clone(), v.clone())) {
@@ -322,13 +335,19 @@ fn run_command<'a, 'b>(cmd: Command, data: &mut data::Data) -> std::io::Result<(
                 run_command(cmd, data)?;
             };
 
+            if s == "lsp" {
+                info!("set lsp to {}", v);
+                lsp::spawn_lsp(data.lsp.clone(), v.clone())?;
+                data.bu.setup_lsp(&mut data.lsp);
+            }
+
             data.bu.set_var(s, v);
         }
         Command::Auto(var, val, cmd) => {
             data.auto.insert((var, val), cmd);
         }
         c => {
-            println!("todo{:?}", c)
+            warn!("todo: {:?}", c)
         }
     }
     Ok(())
@@ -343,10 +362,12 @@ struct Cli {
 fn main() -> std::io::Result<()> {
     let args = Cli::parse();
 
+    logging::setup_logger();
+
     let mut dr: Box<dyn drawer::Drawer>;
 
     if args.cmd {
-        dr = Box::new(drawers::cli::CliDrawer { stdout: stdout() });
+        dr = Box::new(drawer::cli::CliDrawer { stdout: stdout() });
     } else {
         let mut glfw = glfw::init(glfw::fail_on_errors).unwrap();
         glfw.window_hint(glfw::WindowHint::Samples(Some(4)));
@@ -363,9 +384,9 @@ fn main() -> std::io::Result<()> {
 
         glfw.set_swap_interval(glfw::SwapInterval::Adaptive);
 
-        let font = drawers::gl::GlFont::new("font.ttf");
+        let font = drawer::gl::GlFont::new("font.ttf");
 
-        dr = Box::new(drawers::gl::GlDrawer {
+        dr = Box::new(drawer::gl::GlDrawer {
             glfw,
             win: std::cell::RefCell::new(win),
             events,
@@ -374,8 +395,8 @@ fn main() -> std::io::Result<()> {
             keys: HashMap::new(),
             images: std::cell::RefCell::new(HashMap::new()),
             solid_program: std::cell::RefCell::new(None),
-            cursor: std::cell::RefCell::new([drawers::gl::Vector2 { x: 0.0, y: 0.0 }; 4]),
-            cursor_targ: std::cell::RefCell::new([drawers::gl::Vector2 { x: 0.0, y: 0.0 }; 4]),
+            cursor: std::cell::RefCell::new([drawer::gl::Vector2 { x: 0.0, y: 0.0 }; 4]),
+            cursor_targ: std::cell::RefCell::new([drawer::gl::Vector2 { x: 0.0, y: 0.0 }; 4]),
             cursor_t: std::cell::RefCell::new([0.0; 4]),
             mods: event::Mods {
                 shift: false,
@@ -391,7 +412,7 @@ fn main() -> std::io::Result<()> {
         //    .title("PrestoEdit")
         //    .build();
         //rl.set_target_fps(60);
-        //drawer_box = Box::new(drawers::gui::GuiDrawer {
+        //drawer_box = Box::new(drawer::gui::GuiDrawer {
         //    rl,
         //    thread,
         //    font: None,
@@ -424,9 +445,6 @@ fn main() -> std::io::Result<()> {
         ft: "".to_string(),
     };
 
-    let mut lsp = lsp::LSP::new();
-    lsp.init()?;
-
     let mut data = data::Data {
         dr,
         bu,
@@ -434,7 +452,7 @@ fn main() -> std::io::Result<()> {
         binds,
         colors,
         auto,
-        lsp,
+        lsp: Mutex::new(lsp::LSPData::new()).into(),
     };
     let mut config_dir = dirs::config_dir().unwrap_or(path::PathBuf::from("."));
     config_dir.push("prestoedit");
@@ -443,11 +461,11 @@ fn main() -> std::io::Result<()> {
     config_file.set_extension("pe");
 
     if !fs::metadata(config_dir.clone()).is_ok() {
-        fs::create_dir(config_dir);
+        _ = fs::create_dir(config_dir);
     }
 
     if !fs::metadata(config_file.clone()).is_ok() {
-        fs::write(config_file.clone(), DEFAULT_CONFIG);
+        _ = fs::write(config_file.clone(), DEFAULT_CONFIG);
     }
 
     let cmd = Command::parse(format!("source {}", config_file.display()));
@@ -482,6 +500,10 @@ fn main() -> std::io::Result<()> {
             }
         }
         render(&mut data)?;
+        {
+            let l = &mut data.lsp.lock().unwrap();
+            l.update();
+        }
     }
 
     data.dr.deinit()?;

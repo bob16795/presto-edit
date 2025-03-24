@@ -3,7 +3,6 @@ use crate::drawer;
 use crate::event;
 use crate::highlight;
 use crate::lsp;
-use crate::math::*;
 use std::fs::read_dir;
 
 #[derive(Clone)]

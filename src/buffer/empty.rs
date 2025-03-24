@@ -2,7 +2,6 @@ use crate::buffer::*;
 use crate::drawer;
 use crate::event;
 use crate::lsp;
-use crate::math::*;
 use crate::CloseKind;
 
 #[derive(Clone)]
@@ -16,7 +15,7 @@ impl BufferFuncs for EmptyBuffer {
             vec![
                 drawer::Line::Image {
                     path: "!!logo".to_string(),
-                    height: 128,
+                    height: 250,
                 },
                 create_line("        EMPTY BUFFER        ".to_string()),
                 create_line("Press Ctrl-O to open a file!".to_string()),

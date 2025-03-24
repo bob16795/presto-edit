@@ -1,5 +1,5 @@
 use crate::drawer;
-use crate::drawers::helpers;
+use crate::drawer::helpers;
 use crate::event as ev;
 use crate::highlight;
 use crate::math::{Rect, Vector};
@@ -478,7 +478,7 @@ impl drawer::Handle for GlHandle<'_> {
                     }
 
                     match line {
-                        drawer::Line::Image { path, height } => {
+                        drawer::Line::Image { path, height: _ } => {
                             let images = self.images.borrow_mut();
 
                             if images.get(&path) == None {
@@ -530,8 +530,6 @@ impl drawer::Handle for GlHandle<'_> {
                                 0.0, 0.0, 0.0, 0.0, 100.0, 100.0, 0.0, 0.0, 0.0, 100.0, 0.0, 0.0,
                                 0.0, 0.0, 0.0, 0.0, 100.0, 100.0, 0.0, 0.0, 100.0, 0.0, 0.0, 0.0,
                             ];
-
-                            println!("{:?}", verts);
 
                             unsafe {
                                 let img = images.get(&path).unwrap();
@@ -607,7 +605,7 @@ impl drawer::Handle for GlHandle<'_> {
                                 let img;
 
                                 if path.starts_with("!!") {
-                                    match (path.as_str()) {
+                                    match path.as_str() {
                                         "!!logo" => {
                                             img = ImageReader::new(Cursor::new(
                                                 include_bytes!("../assets/logo.png").to_vec(),

@@ -3,29 +3,28 @@ use crate::drawer;
 use crate::event;
 use crate::highlight;
 use crate::lsp;
-use crate::math::*;
-use std::fs::read_to_string;
+use std::fs::read;
 use std::io::Write;
 
-#[derive(PartialEq, Clone)]
-pub enum FileMode {
+#[derive(Clone, PartialEq)]
+pub enum HexMode {
     Normal,
     Insert,
 }
 
 #[derive(Clone)]
-pub struct FileBuffer {
+pub struct HexBuffer {
     pub filename: String,
     pub cached: bool,
-    pub data: Vec<String>,
+    pub data: Vec<u8>,
     pub pos: Vector,
     pub scroll: i32,
-    pub mode: FileMode,
+    pub mode: HexMode,
     pub height: i32,
     pub char_size: Vector,
 }
 
-impl BufferFuncs for FileBuffer {
+impl BufferFuncs for HexBuffer {
     fn setup(&mut self, base: &mut Buffer) {
         base.set_var(
             "filetype".to_string(),
@@ -42,13 +41,11 @@ impl BufferFuncs for FileBuffer {
 
     fn update(&mut self, size: Vector) {
         if !self.cached {
-            let file = read_to_string(&self.filename);
+            let file = read(&self.filename);
             if file.is_err() {
-                self.data.push("".to_string());
+                self.data = vec![0];
             } else {
-                for line in file.unwrap().lines() {
-                    self.data.push(line.to_string())
-                }
+                self.data = file.unwrap();
             }
             self.cached = true;
         }
@@ -67,42 +64,46 @@ impl BufferFuncs for FileBuffer {
             self.scroll += 1;
         }
         if self.pos.y < self.data.len() as i32 {
-            self.pos.x = self
-                .pos
-                .x
-                .clamp(0, self.data[self.pos.y as usize].len() as i32)
+            self.pos.x = self.pos.x.clamp(0, 15)
         }
     }
 
     fn draw_conts(&self, handle: &mut dyn drawer::Handle, coords: Rect) -> std::io::Result<()> {
         let mut lines = Vec::new();
+        let mut i = 16 * self.scroll as usize;
 
-        for idx in 0..coords.h {
-            let line_idx = idx + self.scroll;
-
-            if line_idx as usize >= self.data.len() {
-                lines.push(drawer::Line::Text {
-                    chars: format!(" "),
-                    colors: vec![highlight::Color::Link("lineNumberFg".to_string())],
-                });
-                continue;
-            }
-
-            let l = &self.data[line_idx as usize];
-            let line = format!("{:>4} {}", line_idx + 1, l);
+        for _ in 0..coords.h {
+            let mut line = "".to_string();
+            let mut suff = "".to_string();
             let mut colors = Vec::new();
+            line += format!("{:08X} ", i).as_str();
+            colors.extend(vec![highlight::Color::Link("lineNumberFg".to_string()); 9]);
 
-            for _ in 0..5 {
-                colors.push(highlight::Color::Link("lineNumberFg".to_string()));
-            }
-
-            for ch in l.chars() {
-                if ch.is_numeric() {
-                    colors.push(highlight::Color::Link("fg".to_string()));
-                } else {
-                    colors.push(highlight::Color::Link("fg".to_string()));
+            for _ in 0..4 {
+                for _ in 0..4 {
+                    if i < self.data.len() {
+                        line += format!("{:02X}", self.data[i]).as_str();
+                        if self.data[i] == 0 {
+                            suff.push(' ');
+                            colors.extend(vec![highlight::Color::Link("error".to_string()); 2]);
+                        } else if self.data[i] > 32 && self.data[i] < 128 {
+                            suff.push(self.data[i] as char);
+                            colors.extend(vec![highlight::Color::Link("fg".to_string()); 2]);
+                        } else {
+                            suff.push('.');
+                            colors.extend(vec![highlight::Color::Link("error".to_string()); 2]);
+                        }
+                        i += 1;
+                    } else {
+                        line += format!("..").as_str();
+                        colors.extend(vec![highlight::Color::Link("fg".to_string()); 2]);
+                    }
                 }
+                line += format!(" ").as_str();
+                colors.extend(vec![highlight::Color::Link("fg".to_string()); 1]);
             }
+
+            line += &suff;
 
             lines.push(drawer::Line::Text {
                 chars: line,
@@ -118,7 +119,7 @@ impl BufferFuncs for FileBuffer {
                 y: coords.y,
             },
             Vector {
-                x: (w as f32 * 4.5) as i32,
+                x: (w as f32 * 8.5) as i32,
                 y: coords.h,
             },
             highlight::Color::Link("lineNumberBg".to_string()),
@@ -126,11 +127,11 @@ impl BufferFuncs for FileBuffer {
 
         handle.render_line(
             Vector {
-                x: coords.x + (w as f32 * 4.5) as i32,
+                x: coords.x + (w as f32 * 8.5) as i32,
                 y: coords.y,
             },
             Vector {
-                x: coords.x + (w as f32 * 4.5) as i32,
+                x: coords.x + (w as f32 * 8.5) as i32,
                 y: coords.y + coords.h,
             },
             highlight::Color::Link("lineNumberSplit".to_string()),
@@ -148,25 +149,29 @@ impl BufferFuncs for FileBuffer {
 
         let mut result = drawer::CursorData::Show {
             pos: Vector {
-                x: self.pos.x * char_size.x,
+                x: (self.pos.x * 2 + self.pos.x / 4) * char_size.x,
                 y: self.pos.y * char_size.y,
             },
-            size: char_size,
-            kind: if self.mode == FileMode::Normal {
+            size: Vector {
+                x: char_size.x * 2,
+                y: char_size.y,
+            },
+            kind: if self.mode == HexMode::Normal {
                 drawer::CursorStyle::Block
             } else {
                 drawer::CursorStyle::Bar
             },
         };
+
         result.offset(Vector {
-            x: 5 * char_size.x,
+            x: 9 * char_size.x,
             y: -self.scroll * char_size.y,
         });
 
         result
     }
 
-    fn event_process(&mut self, ev: event::Event, lsp: &mut lsp::LSP, coords: Rect) {
+    fn event_process(&mut self, ev: event::Event, _lsp: &mut lsp::LSP, coords: Rect) {
         let targ_none = event::Mods {
             ctrl: false,
             alt: false,
@@ -195,57 +200,24 @@ impl BufferFuncs for FileBuffer {
                 self.pos.x += 1;
                 return;
             }
-            (FileMode::Insert, event::Event::Nav(mods, event::Nav::Enter)) if mods == targ_none => {
-                let next = self.data[self.pos.y as usize].split_off(self.pos.x as usize);
-                self.data.insert((self.pos.y + 1) as usize, next);
-                self.pos.x = 0;
-                self.pos.y += 1;
-
-                return;
-            }
-            (FileMode::Insert, event::Event::Nav(mods, event::Nav::BackSpace))
-                if mods == targ_none =>
-            {
-                if self.pos.x > 0 {
-                    self.data[self.pos.y as usize].remove((self.pos.x - 1) as usize);
-                    self.pos.x -= 1;
-                } else if self.pos.y > 0 {
-                    self.pos.x = self.data[(self.pos.y - 1) as usize].len() as i32;
-                    let adds = self.data[self.pos.y as usize].clone();
-                    self.data[(self.pos.y - 1) as usize].push_str(&adds);
-                    self.data.remove(self.pos.y as usize);
-                    self.pos.y -= 1;
-                }
-
-                return;
-            }
-            (FileMode::Insert, event::Event::Nav(mods, event::Nav::Escape))
-                if mods == targ_none =>
-            {
-                self.mode = FileMode::Normal;
+            (HexMode::Insert, event::Event::Nav(mods, event::Nav::Escape)) if mods == targ_none => {
+                self.mode = HexMode::Normal;
             }
             (_, event::Event::Save(None)) => {
                 let mut file = std::fs::File::create(self.filename.as_str()).unwrap();
-                let mut conts: String = "".to_string();
-                for line in &self.data {
-                    let _ = file.write(line.as_bytes());
-                    let _ = file.write(b"\n");
-                    conts += line;
-                    conts.push('\n');
-                }
-
-                lsp.save_file(self.filename.clone(), conts).unwrap();
+                let _ = file.write(&self.data);
             }
-            (FileMode::Insert, event::Event::Key(mods, c)) if mods == targ_none => {
-                self.data[self.pos.y as usize].insert(self.pos.x as usize, c);
-                self.pos.x += 1;
-                return;
-            }
-            (FileMode::Normal, event::Event::Key(mods, c)) if mods == targ_none && c == 'i' => {
-                self.mode = FileMode::Insert;
+            //(HexMode::Insert, event::Event::Key(mods, c)) if mods == targ_none => {
+            //    self.data[self.pos.y as usize].insert(self.pos.x as usize, c);
+            //    self.pos.x += 1;
+            //    return;
+            //}
+            (HexMode::Normal, event::Event::Key(mods, c)) if mods == targ_none && c == 'i' => {
+                self.mode = HexMode::Insert;
             }
             (_, event::Event::Mouse(pos, _btn)) => {
-                self.pos.x = (pos.x - coords.x) / self.char_size.x - 5;
+                self.pos.x = ((pos.x - coords.x) / self.char_size.x / 2) - 5;
+                self.pos.x -= self.pos.x / 9;
                 self.pos.y = (pos.y - coords.y) / self.char_size.y + self.scroll;
             }
             _ => {}
@@ -257,7 +229,7 @@ impl BufferFuncs for FileBuffer {
     }
 
     fn get_path(&self) -> String {
-        format!("File[{}]", self.filename)
+        format!("Hex[{}]", self.filename)
     }
 
     fn set_focused(&mut self, _child: &Box<Buffer>) -> bool {
@@ -265,7 +237,10 @@ impl BufferFuncs for FileBuffer {
     }
 
     fn close(&mut self, lsp: &mut lsp::LSP) -> CloseKind {
-        lsp.close_file(self.filename.clone()).unwrap();
+        lsp.lock()
+            .unwrap()
+            .close_file(self.filename.clone())
+            .unwrap();
         CloseKind::This
     }
 }

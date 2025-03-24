@@ -35,6 +35,7 @@ pub enum Command {
     Highlight(Option<(String, Option<Color>)>),
     Set(String, Option<String>),
     Auto(String, String, String),
+    Log,
     Run,
     Close,
     Exit,
@@ -93,6 +94,7 @@ impl Command {
             },
             Some("quit" | "q") => Command::Close,
             Some("exit" | "e") => Command::Exit,
+            Some("log") => Command::Log,
             Some("highlight" | "hi") => match (
                 split.next(),
                 split.map(|s| &*s).collect::<Vec<&str>>().join(" "),
